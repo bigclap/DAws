@@ -1,0 +1,97 @@
+use crate::signal::Network;
+
+#[derive(Clone, Copy, Debug)]
+pub struct DiffusionConfig {
+    pub alpha: f32,
+    pub tolerance: f32,
+    pub max_iters: usize,
+    pub noise: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffusionOutcome {
+    pub state: Vec<f32>,
+}
+
+pub struct DiffusionLoop {
+    config: DiffusionConfig,
+    last_similarity: f32,
+    last_iterations: usize,
+}
+
+impl DiffusionLoop {
+    pub fn new(config: DiffusionConfig) -> Self {
+        Self {
+            config,
+            last_similarity: 0.0,
+            last_iterations: 0,
+        }
+    }
+
+    pub fn run(&mut self, network: &mut Network) -> DiffusionOutcome {
+        let mut current = network.state_vector();
+        if current.is_empty() {
+            self.last_similarity = 1.0;
+            self.last_iterations = 0;
+            return DiffusionOutcome { state: current };
+        }
+
+        let mut last_similarity = 1.0;
+        for iter in 0..self.config.max_iters {
+            let consensus = network.consensus_state();
+            let mut next = Vec::with_capacity(consensus.len());
+            for (idx, (value, consensus_value)) in current.iter().zip(consensus.iter()).enumerate()
+            {
+                let delta = self.config.alpha * (consensus_value - value);
+                let noise = deterministic_noise(idx, iter, self.config.noise);
+                next.push((value + delta + noise).clamp(0.0, 1.0));
+            }
+            last_similarity = cosine_similarity(&current, &next);
+            network.set_state(&next);
+            current = next;
+            if 1.0 - last_similarity <= self.config.tolerance {
+                self.last_iterations = iter + 1;
+                self.last_similarity = last_similarity;
+                return DiffusionOutcome {
+                    state: network.state_vector(),
+                };
+            }
+        }
+        self.last_iterations = self.config.max_iters;
+        self.last_similarity = last_similarity;
+        DiffusionOutcome {
+            state: network.state_vector(),
+        }
+    }
+
+    pub fn last_similarity(&self) -> f32 {
+        self.last_similarity
+    }
+
+    pub fn last_iterations(&self) -> usize {
+        self.last_iterations
+    }
+}
+
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 1.0;
+    }
+    dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+
+fn deterministic_noise(index: usize, iteration: usize, amplitude: f32) -> f32 {
+    if amplitude == 0.0 {
+        return 0.0;
+    }
+    let phase = (index as f32 * 0.6180339 + iteration as f32 * 0.41421356).sin();
+    phase * amplitude
+}
