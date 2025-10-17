@@ -131,6 +131,10 @@ pub struct Connection {
     pub max_weight: f32,
     pub delay: usize,
     pub eligibility: f32,
+    pub elig_fast: f32,
+    pub elig_slow: f32,
+    pub dt_ema: f32,
+    pub used_step: usize,
     pub a_plus: f32,
     pub a_minus: f32,
     pub tau_plus: f32,
@@ -158,6 +162,10 @@ impl Connection {
             max_weight,
             delay,
             eligibility: 0.0,
+            elig_fast: 0.0,
+            elig_slow: 0.0,
+            dt_ema: 0.0,
+            used_step: 0,
             a_plus,
             a_minus,
             tau_plus,
@@ -205,6 +213,10 @@ impl Network {
         }
         for conn in &mut self.connections {
             conn.eligibility = 0.0;
+            conn.elig_fast = 0.0;
+            conn.elig_slow = 0.0;
+            conn.dt_ema = 0.0;
+            conn.used_step = 0;
             conn.last_post_spike = None;
             conn.last_pre_spike = None;
         }
@@ -244,6 +256,7 @@ impl Network {
         for node_id in modulatory_spikes.iter().copied() {
             let outgoing = self.outgoing[node_id].clone();
             for conn_id in outgoing {
+                self.register_pre_spike(conn_id, step);
                 let conn = &self.connections[conn_id];
                 let weight = conn.weight;
                 if let Some(target) = self.nodes.get_mut(conn.to) {
@@ -252,11 +265,13 @@ impl Network {
                         target.modulation = -0.9;
                     }
                 }
-                let conn = &mut self.connections[conn_id];
-                conn.last_pre_spike = Some(step);
             }
             if let Some(node) = self.nodes.get_mut(node_id) {
                 node.on_spike(step);
+            }
+            let incoming = self.incoming[node_id].clone();
+            for conn_id in incoming {
+                self.register_post_spike(conn_id, step);
             }
         }
         report.modulatory_spikes = modulatory_spikes;
@@ -273,6 +288,7 @@ impl Network {
             let node_type = self.nodes[node_id].node_type;
             let outgoing = self.outgoing[node_id].clone();
             for conn_id in outgoing {
+                self.register_pre_spike(conn_id, step);
                 let conn = &self.connections[conn_id];
                 match node_type {
                     NodeType::Inhibitory => {
@@ -286,15 +302,13 @@ impl Network {
                         }
                     }
                 }
-                let conn = &mut self.connections[conn_id];
-                conn.last_pre_spike = Some(step);
             }
             if let Some(node) = self.nodes.get_mut(node_id) {
                 node.on_spike(step);
             }
-            for &conn_id in &self.incoming[node_id] {
-                let conn = &mut self.connections[conn_id];
-                conn.last_post_spike = Some(step);
+            let incoming = self.incoming[node_id].clone();
+            for conn_id in incoming {
+                self.register_post_spike(conn_id, step);
             }
         }
         report.spikes = spikes;
@@ -315,24 +329,25 @@ impl Network {
     }
 
     pub fn apply_reward(&mut self, reward: f32, learning_rate: f32) {
+        self.apply_reward_components(reward, reward, learning_rate);
+    }
+
+    pub fn apply_reward_components(
+        &mut self,
+        reward_fast: f32,
+        reward_slow: f32,
+        learning_rate: f32,
+    ) {
         for conn in &mut self.connections {
-            if let (Some(pre), Some(post)) = (conn.last_pre_spike, conn.last_post_spike) {
-                let delta_t = post as isize - pre as isize;
-                let delta_t_f = delta_t as f32;
-                let potentiation = if delta_t_f >= 0.0 {
-                    conn.a_plus * (-(delta_t_f) / conn.tau_plus).exp()
-                } else {
-                    0.0
-                };
-                let depression = if delta_t_f <= 0.0 {
-                    conn.a_minus * (delta_t_f.abs() / conn.tau_minus).exp()
-                } else {
-                    0.0
-                };
-                conn.eligibility = potentiation - depression;
-                let delta_w = learning_rate * reward * conn.eligibility;
+            let delta_w =
+                learning_rate * (reward_fast * conn.elig_fast + reward_slow * conn.elig_slow);
+            if delta_w != 0.0 {
                 conn.weight = (conn.weight + delta_w).clamp(0.0, conn.max_weight);
             }
+            conn.eligibility = conn.elig_fast + conn.elig_slow;
+            conn.elig_fast *= 0.98;
+            conn.elig_slow *= 0.999;
+            conn.used_step = 0;
         }
     }
 
@@ -341,6 +356,50 @@ impl Network {
             .get(connection_id)
             .map(|conn| conn.weight)
             .unwrap_or(0.0)
+    }
+
+    pub fn connection_traces(&self, connection_id: usize) -> (f32, f32) {
+        self.connections
+            .get(connection_id)
+            .map(|conn| (conn.elig_fast, conn.elig_slow))
+            .unwrap_or((0.0, 0.0))
+    }
+
+    fn register_pre_spike(&mut self, conn_id: usize, step: usize) {
+        let to = self.connections[conn_id].to;
+        let dst_last_spike = self.nodes[to].last_spike_step;
+        let dt = dst_last_spike.map(|last| step as f32 - last as f32);
+        let conn = &mut self.connections[conn_id];
+        if let Some(dt) = dt {
+            let tau = conn.tau_minus.max(1e-6);
+            let decay = (-(dt) / tau).exp();
+            conn.elig_fast -= conn.a_minus * decay;
+            conn.elig_slow -= 0.1 * conn.a_minus * decay;
+            conn.dt_ema = 0.85 * conn.dt_ema + 0.15 * dt;
+        } else {
+            conn.dt_ema *= 0.85;
+        }
+        conn.last_pre_spike = Some(step);
+        conn.used_step = step;
+    }
+
+    fn register_post_spike(&mut self, conn_id: usize, step: usize) {
+        let pre_last = self.connections[conn_id].last_pre_spike;
+        let conn = &mut self.connections[conn_id];
+        if let Some(pre_last) = pre_last {
+            let dt = step as f32 - pre_last as f32;
+            if dt >= 0.0 {
+                let tau = conn.tau_plus.max(1e-6);
+                let factor = (-(dt) / tau).exp();
+                conn.elig_fast += conn.a_plus * factor;
+                conn.elig_slow += 0.1 * conn.a_plus * factor;
+                conn.dt_ema = 0.85 * conn.dt_ema + 0.15 * dt;
+            }
+        } else {
+            conn.dt_ema *= 0.85;
+        }
+        conn.last_post_spike = Some(step);
+        conn.used_step = step;
     }
 
     pub fn node(&self, node_id: usize) -> &Node {
@@ -629,5 +688,36 @@ mod tests {
                 "step {step}: expected {expected}, got {potential}"
             );
         }
+    }
+
+    #[test]
+    fn eligibility_traces_update_and_decay() {
+        let mut network = super::test_helpers::simple_pair();
+
+        network.inject(&[(0, 1.0)]);
+        let _ = network.step(0);
+        network.inject(&[(1, 1.0)]);
+        let report = network.step(1);
+        assert!(report.spikes.contains(&1));
+
+        let (fast_before, slow_before) = network.connection_traces(0);
+        assert!(
+            fast_before > 0.0,
+            "fast trace should increase after causal pair"
+        );
+        assert!(slow_before > 0.0 && slow_before < fast_before);
+
+        let weight_before = network.connection_weight(0);
+        network.apply_reward_components(1.0, 0.5, 0.1);
+        let weight_after = network.connection_weight(0);
+        let expected_delta = 0.1 * (1.0 * fast_before + 0.5 * slow_before);
+        assert!(
+            (weight_after - (weight_before + expected_delta)).abs() < 1e-5,
+            "unexpected weight update"
+        );
+
+        let (fast_after, slow_after) = network.connection_traces(0);
+        assert!((fast_after - fast_before * 0.98).abs() < 1e-6);
+        assert!((slow_after - slow_before * 0.999).abs() < 1e-6);
     }
 }
