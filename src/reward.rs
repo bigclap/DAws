@@ -1,30 +1,44 @@
+//! Reward shaping utilities that integrate sparsity and consistency signals.
+
 use std::collections::HashSet;
 
 use crate::diffusion::cosine_similarity;
 use crate::signal::Network;
 
 #[derive(Clone, Copy, Debug)]
+/// Tunable coefficients governing the reward calculation.
 pub struct RewardConfig {
+    /// Weight applied to logical correctness of spike patterns.
     pub alpha: f32,
+    /// Penalty factor applied to activation sparsity.
     pub beta: f32,
+    /// Scaling factor for temporal consistency between diffusion steps.
     pub gamma: f32,
+    /// Activation level treated as "on" when measuring sparsity.
     pub activation_threshold: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Breakdown of reward components for diagnostics and tests.
 pub struct RewardBreakdown {
+    /// Aggregated scalar reward.
     pub reward: f32,
+    /// Contribution from expected versus observed spikes.
     pub logic: f32,
+    /// Fraction of active neurons relative to the configured threshold.
     pub sparsity: f32,
+    /// Cosine similarity between consecutive diffusion states.
     pub consistency: f32,
 }
 
+/// Stateful reward calculator that remembers the previous activation snapshot.
 pub struct RewardCalculator {
     config: RewardConfig,
     previous_state: Option<Vec<f32>>,
 }
 
 impl RewardCalculator {
+    /// Creates a calculator using the supplied [`RewardConfig`].
     pub fn new(config: RewardConfig) -> Self {
         Self {
             config,
@@ -32,6 +46,7 @@ impl RewardCalculator {
         }
     }
 
+    /// Evaluates reward components for a single reasoning step.
     pub fn evaluate(
         &mut self,
         network: &Network,
@@ -58,6 +73,7 @@ impl RewardCalculator {
     }
 }
 
+/// Computes a simple accuracy-style score over spike sets.
 fn logic_score(expected: &[usize], actual: &[usize]) -> f32 {
     let expected_set: HashSet<_> = expected.iter().copied().collect();
     let actual_set: HashSet<_> = actual.iter().copied().collect();

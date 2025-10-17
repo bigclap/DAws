@@ -1,19 +1,29 @@
+//! Event-driven spiking network core with local plasticity helpers.
+
 use std::collections::HashMap;
 
 use crate::io::{BinaryDecoder, TableEncoder};
 
+/// Maximum discrete synaptic delay supported by the simulator.
 pub const MAX_DELAY: usize = 16;
+/// Alpha-kernel coefficients applied when delivering excitation.
 pub const ALPHA_KERNEL: [f32; 8] = [0.6, 0.9, 0.8, 0.5, 0.3, 0.15, 0.08, 0.04];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Functional category assigned to a [`Node`].
 pub enum NodeType {
+    /// Excitatory projection neuron delivering positive current.
     Excitatory,
+    /// Inhibitory neuron providing divisive suppression.
     Inhibitory,
+    /// Modulatory neuron temporarily adjusting downstream thresholds.
     Modulatory,
+    /// Memory neuron with self-loop support for slow decay.
     Memory,
 }
 
 #[derive(Clone, Debug)]
+/// Spiking unit with alpha-kernel synaptic integration and divisive normalisation.
 pub struct Node {
     pub id: usize,
     pub node_type: NodeType,
@@ -37,6 +47,7 @@ pub struct Node {
 }
 
 impl Node {
+    /// Constructs a node with the supplied dynamics parameters.
     pub fn new(
         id: usize,
         node_type: NodeType,
@@ -71,11 +82,13 @@ impl Node {
         }
     }
 
+    /// Returns the effective firing threshold after modulation and adaptation.
     pub fn effective_threshold(&self) -> f32 {
         let modulation_scale = (1.0 + self.modulation).clamp(0.1, 10.0);
         self.base_threshold * modulation_scale + self.adaptation
     }
 
+    /// Integrates accumulated excitation and inhibition for one time step.
     pub fn step_integrate(&mut self) {
         let incoming_exc = self.future_exc[0];
         self.future_exc.rotate_left(1);
@@ -98,6 +111,7 @@ impl Node {
         self.accum_inh = 0.0;
     }
 
+    /// Applies spike side-effects such as resetting potential and recording time.
     pub fn on_spike(&mut self, step: usize) {
         self.potential = 0.0;
         self.activation = 1.0;
@@ -109,6 +123,7 @@ impl Node {
         }
     }
 
+    /// Clears transient state, restoring the node to its initial conditions.
     pub fn reset_state(&mut self) {
         self.potential = 0.0;
         self.activation = 0.0;
@@ -124,6 +139,7 @@ impl Node {
 }
 
 #[derive(Clone, Debug)]
+/// Directed synapse with reward-modulated STDP traces.
 pub struct Connection {
     pub from: usize,
     pub to: usize,
@@ -144,6 +160,7 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// Creates a synapse with the provided STDP parameters.
     pub fn new(
         from: usize,
         to: usize,
@@ -177,11 +194,13 @@ impl Connection {
 }
 
 #[derive(Default, Debug, Clone)]
+/// Spike bookkeeping returned from [`Network::step`].
 pub struct StepReport {
     pub spikes: Vec<usize>,
     pub modulatory_spikes: Vec<usize>,
 }
 
+/// Sparse event-driven network that hosts nodes and synapses.
 pub struct Network {
     pub nodes: Vec<Node>,
     pub connections: Vec<Connection>,
@@ -191,6 +210,7 @@ pub struct Network {
 }
 
 impl Network {
+    /// Builds a new network and pre-computes adjacency lists.
     pub fn new(nodes: Vec<Node>, connections: Vec<Connection>, input_nodes: Vec<usize>) -> Self {
         let mut outgoing = vec![Vec::new(); nodes.len()];
         let mut incoming = vec![Vec::new(); nodes.len()];
@@ -207,6 +227,7 @@ impl Network {
         }
     }
 
+    /// Resets all nodes and synapses to their default activation state.
     pub fn reset_state(&mut self) {
         for node in &mut self.nodes {
             node.reset_state();
@@ -222,6 +243,7 @@ impl Network {
         }
     }
 
+    /// Adds instantaneous excitation to the specified nodes.
     pub fn inject(&mut self, excitations: &[(usize, f32)]) {
         for &(id, value) in excitations {
             if let Some(node) = self.nodes.get_mut(id) {
@@ -230,6 +252,7 @@ impl Network {
         }
     }
 
+    /// Writes an embedding into the configured input interface.
     pub fn inject_embedding(&mut self, embedding: &[f32]) {
         for (node_id, value) in self.input_nodes.iter().zip(embedding.iter().copied()) {
             if let Some(node) = self.nodes.get_mut(*node_id) {
@@ -238,6 +261,7 @@ impl Network {
         }
     }
 
+    /// Advances the network by one discrete step and returns fired nodes.
     pub fn step(&mut self, step: usize) -> StepReport {
         let mut report = StepReport::default();
 
@@ -316,6 +340,7 @@ impl Network {
         report
     }
 
+    /// Ratio of nodes with activation above the provided threshold.
     pub fn active_ratio(&self, activation_threshold: f32) -> f32 {
         if self.nodes.is_empty() {
             return 0.0;
@@ -328,10 +353,12 @@ impl Network {
         active as f32 / self.nodes.len() as f32
     }
 
+    /// Applies a scalar reward to all synapses using the configured learning rate.
     pub fn apply_reward(&mut self, reward: f32, learning_rate: f32) {
         self.apply_reward_components(reward, reward, learning_rate);
     }
 
+    /// Applies separate fast and slow rewards, updating traces and weights.
     pub fn apply_reward_components(
         &mut self,
         reward_fast: f32,
@@ -351,6 +378,7 @@ impl Network {
         }
     }
 
+    /// Returns the weight of a connection by index or zero if missing.
     pub fn connection_weight(&self, connection_id: usize) -> f32 {
         self.connections
             .get(connection_id)
@@ -358,6 +386,7 @@ impl Network {
             .unwrap_or(0.0)
     }
 
+    /// Returns the fast and slow eligibility traces for a connection.
     pub fn connection_traces(&self, connection_id: usize) -> (f32, f32) {
         self.connections
             .get(connection_id)
@@ -365,6 +394,7 @@ impl Network {
             .unwrap_or((0.0, 0.0))
     }
 
+    /// Updates STDP traces for a presynaptic spike event.
     fn register_pre_spike(&mut self, conn_id: usize, step: usize) {
         let to = self.connections[conn_id].to;
         let dst_last_spike = self.nodes[to].last_spike_step;
@@ -383,6 +413,7 @@ impl Network {
         conn.used_step = step;
     }
 
+    /// Updates STDP traces for a postsynaptic spike event.
     fn register_post_spike(&mut self, conn_id: usize, step: usize) {
         let pre_last = self.connections[conn_id].last_pre_spike;
         let conn = &mut self.connections[conn_id];
@@ -402,24 +433,29 @@ impl Network {
         conn.used_step = step;
     }
 
+    /// Immutable access to a node by identifier.
     pub fn node(&self, node_id: usize) -> &Node {
         &self.nodes[node_id]
     }
 
+    /// Mutable access to a node by identifier.
     pub fn node_mut(&mut self, node_id: usize) -> &mut Node {
         &mut self.nodes[node_id]
     }
 
+    /// Collects current activation values into a contiguous vector.
     pub fn state_vector(&self) -> Vec<f32> {
         self.nodes.iter().map(|node| node.activation).collect()
     }
 
+    /// Overwrites node activations with values from the supplied slice.
     pub fn set_state(&mut self, state: &[f32]) {
         for (node, value) in self.nodes.iter_mut().zip(state.iter().copied()) {
             node.activation = value;
         }
     }
 
+    /// Computes the consensus activation state based on incoming connections.
     pub fn consensus_state(&self) -> Vec<f32> {
         let mut result = Vec::with_capacity(self.nodes.len());
         for (idx, node) in self.nodes.iter().enumerate() {
@@ -454,6 +490,7 @@ impl Network {
         result
     }
 
+    /// Lightweight energy proxy used for runtime diagnostics.
     pub fn energy(&self) -> f32 {
         self.nodes
             .iter()
@@ -461,11 +498,13 @@ impl Network {
             .sum()
     }
 
+    /// Identifiers for nodes that receive embedding inputs.
     pub fn input_nodes(&self) -> &[usize] {
         &self.input_nodes
     }
 }
 
+/// Schedules delayed excitation delivery using the alpha kernel.
 fn deliver(node: &mut Node, weight: f32, delay: usize) {
     let start = delay.min(MAX_DELAY - 1);
     for (idx, coeff) in ALPHA_KERNEL.iter().enumerate() {
@@ -477,10 +516,12 @@ fn deliver(node: &mut Node, weight: f32, delay: usize) {
     }
 }
 
+/// Accumulates inhibition for divisive normalisation.
 fn schedule_inhibition(node: &mut Node, weight: f32, _delay: usize) {
     node.accum_inh += weight.abs();
 }
 
+/// Builds a compact XOR reasoning graph used by integration tests and the CLI.
 pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
     let mut nodes = Vec::new();
     nodes.push(Node::new(
