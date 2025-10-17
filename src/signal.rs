@@ -7,6 +7,7 @@ pub enum NodeType {
     Excitatory,
     Inhibitory,
     Modulatory,
+    Memory,
 }
 
 #[derive(Clone, Debug)]
@@ -20,11 +21,13 @@ pub struct Node {
     pub lambda_v: f32,
     pub lambda_h: f32,
     pub activation_decay: f32,
+    pub divisive_beta: f32,
     pub kappa: f32,
     pub modulation: f32,
     pub modulation_decay: f32,
     pub eligibility: f32,
     pub last_spike_step: Option<usize>,
+    pub inhibition_accumulator: f32,
 }
 
 impl Node {
@@ -35,6 +38,7 @@ impl Node {
         lambda_v: f32,
         lambda_h: f32,
         activation_decay: f32,
+        divisive_beta: f32,
         kappa: f32,
         modulation_decay: f32,
     ) -> Self {
@@ -48,11 +52,13 @@ impl Node {
             lambda_v,
             lambda_h,
             activation_decay,
+            divisive_beta,
             kappa,
             modulation: 0.0,
             modulation_decay,
             eligibility: 0.0,
             last_spike_step: None,
+            inhibition_accumulator: 0.0,
         }
     }
 
@@ -73,6 +79,10 @@ impl Node {
         self.activation = 1.0;
         self.adaptation += self.kappa;
         self.last_spike_step = Some(step);
+        if matches!(self.node_type, NodeType::Memory) {
+            let scaled = ((1.0 + self.modulation).clamp(0.1, 10.0)) * 0.9;
+            self.modulation = (scaled - 1.0).clamp(-0.9, 9.0);
+        }
     }
 
     pub fn reset_state(&mut self) {
@@ -82,6 +92,7 @@ impl Node {
         self.modulation = 0.0;
         self.last_spike_step = None;
         self.eligibility = 0.0;
+        self.inhibition_accumulator = 0.0;
     }
 }
 
@@ -130,10 +141,17 @@ impl Connection {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventKind {
+    Excitatory,
+    Inhibitory,
+}
+
 #[derive(Clone, Debug)]
 struct ScheduledEvent {
     target: usize,
     delta: f32,
+    kind: EventKind,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -149,6 +167,7 @@ pub struct Network {
     incoming: Vec<Vec<usize>>,
     event_queue: Vec<Vec<ScheduledEvent>>,
     max_delay: usize,
+    current_slot: usize,
     input_nodes: Vec<usize>,
 }
 
@@ -161,13 +180,15 @@ impl Network {
             outgoing[conn.from].push(idx);
             incoming[conn.to].push(idx);
         }
+        let queue_len = (max_delay + 1).max(1);
         Self {
             nodes,
             connections,
             outgoing,
             incoming,
-            event_queue: vec![Vec::new(); max_delay.max(1) + 1],
-            max_delay: max_delay.max(1),
+            event_queue: vec![Vec::new(); queue_len],
+            max_delay,
+            current_slot: 0,
             input_nodes,
         }
     }
@@ -184,6 +205,7 @@ impl Network {
         for queue in &mut self.event_queue {
             queue.clear();
         }
+        self.current_slot = 0;
     }
 
     pub fn inject(&mut self, excitations: &[(usize, f32)]) {
@@ -208,7 +230,12 @@ impl Network {
         let due_events = self.pop_events();
         for event in due_events {
             if let Some(node) = self.nodes.get_mut(event.target) {
-                node.potential += event.delta;
+                match event.kind {
+                    EventKind::Excitatory => node.potential += event.delta,
+                    EventKind::Inhibitory => {
+                        node.inhibition_accumulator += event.delta.abs();
+                    }
+                }
             }
         }
 
@@ -240,6 +267,8 @@ impl Network {
         }
         report.modulatory_spikes = modulatory_spikes;
 
+        self.apply_divisive_normalization();
+
         let mut spikes = Vec::new();
         for node in self.nodes.iter() {
             if node.node_type != NodeType::Modulatory && node.potential > node.effective_threshold()
@@ -253,12 +282,12 @@ impl Network {
             let outgoing = self.outgoing[node_id].clone();
             for conn_id in outgoing {
                 let conn = &self.connections[conn_id];
-                let sign = match node_type {
-                    NodeType::Inhibitory => -1.0,
-                    _ => 1.0,
+                let kind = match node_type {
+                    NodeType::Inhibitory => EventKind::Inhibitory,
+                    _ => EventKind::Excitatory,
                 };
-                let delta = sign * conn.weight;
-                self.schedule_event(conn.delay, conn.to, delta);
+                let delta = conn.weight;
+                self.schedule_event(conn.delay, conn.to, delta, kind);
                 let conn = &mut self.connections[conn_id];
                 conn.last_pre_spike = Some(step);
             }
@@ -282,17 +311,44 @@ impl Network {
     }
 
     fn pop_events(&mut self) -> Vec<ScheduledEvent> {
-        let due = std::mem::take(&mut self.event_queue[0]);
-        self.event_queue.rotate_left(1);
-        if let Some(last) = self.event_queue.last_mut() {
-            last.clear();
+        if self.event_queue.is_empty() {
+            return Vec::new();
         }
+        let due = std::mem::take(&mut self.event_queue[self.current_slot]);
+        self.current_slot = (self.current_slot + 1) % self.event_queue.len();
         due
     }
 
-    fn schedule_event(&mut self, delay: usize, target: usize, delta: f32) {
+    fn schedule_event(&mut self, delay: usize, target: usize, delta: f32, kind: EventKind) {
+        if self.event_queue.is_empty() {
+            return;
+        }
         let actual_delay = delay.min(self.max_delay);
-        self.event_queue[actual_delay].push(ScheduledEvent { target, delta });
+        let slot = (self.current_slot + actual_delay) % self.event_queue.len();
+        self.event_queue[slot].push(ScheduledEvent {
+            target,
+            delta,
+            kind,
+        });
+    }
+
+    fn apply_divisive_normalization(&mut self) {
+        for node in &mut self.nodes {
+            if node.divisive_beta == 0.0 {
+                node.inhibition_accumulator = 0.0;
+                continue;
+            }
+            let inhibition = node.inhibition_accumulator.max(0.0);
+            if inhibition == 0.0 && node.adaptation <= 0.0 {
+                node.inhibition_accumulator = 0.0;
+                continue;
+            }
+            let denominator = 1.0 + node.divisive_beta * (inhibition + node.adaptation.max(0.0));
+            if denominator > 0.0 {
+                node.potential /= denominator;
+            }
+            node.inhibition_accumulator = 0.0;
+        }
     }
 
     pub fn active_ratio(&self, activation_threshold: f32) -> f32 {
@@ -373,7 +429,7 @@ impl Network {
                 }
                 let sign = match source.node_type {
                     NodeType::Inhibitory | NodeType::Modulatory => -1.0,
-                    NodeType::Excitatory => 1.0,
+                    NodeType::Excitatory | NodeType::Memory => 1.0,
                 };
                 sum += sign * conn.weight * source.activation;
                 total_weight += strength;
@@ -409,6 +465,7 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.95,
         0.9,
         0.3,
+        0.0,
         0.1,
         0.0,
     ));
@@ -419,6 +476,7 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.95,
         0.9,
         0.3,
+        0.0,
         0.1,
         0.0,
     ));
@@ -429,6 +487,7 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.98,
         0.9,
         0.7,
+        0.0,
         0.05,
         0.0,
     ));
@@ -439,15 +498,16 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.98,
         0.9,
         0.6,
+        0.0,
         0.05,
         0.0,
     ));
 
     let mut connections = Vec::new();
-    connections.push(Connection::new(0, 2, 1.0, 3.0, 1, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(1, 2, 1.0, 3.0, 1, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(0, 3, 0.7, 2.0, 1, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(1, 3, 0.7, 2.0, 1, 1.0, 1.0, 5.0, 5.0));
+    connections.push(Connection::new(0, 2, 1.0, 3.0, 0, 1.0, 1.0, 5.0, 5.0));
+    connections.push(Connection::new(1, 2, 1.0, 3.0, 0, 1.0, 1.0, 5.0, 5.0));
+    connections.push(Connection::new(0, 3, 0.7, 2.0, 0, 1.0, 1.0, 5.0, 5.0));
+    connections.push(Connection::new(1, 3, 0.7, 2.0, 0, 1.0, 1.0, 5.0, 5.0));
     connections.push(Connection::new(3, 2, 2.5, 3.0, 0, 1.0, 1.0, 5.0, 5.0));
 
     let input_nodes = vec![0, 1];
@@ -468,8 +528,8 @@ pub mod test_helpers {
 
     pub fn two_node_modulatory() -> Network {
         let nodes = vec![
-            Node::new(0, NodeType::Modulatory, 0.5, 0.99, 0.9, 0.9, 0.05, 0.0),
-            Node::new(1, NodeType::Excitatory, 0.6, 0.99, 0.9, 0.9, 0.05, 0.0),
+            Node::new(0, NodeType::Modulatory, 0.5, 0.99, 0.9, 0.9, 0.0, 0.05, 0.0),
+            Node::new(1, NodeType::Excitatory, 0.6, 0.99, 0.9, 0.9, 0.0, 0.05, 0.0),
         ];
         let connections = vec![Connection::new(0, 1, 1.0, 2.0, 0, 1.0, 1.0, 5.0, 5.0)];
         Network::new(nodes, connections, vec![0])
@@ -477,10 +537,100 @@ pub mod test_helpers {
 
     pub fn simple_pair() -> Network {
         let nodes = vec![
-            Node::new(0, NodeType::Excitatory, 0.3, 0.99, 0.9, 0.9, 0.05, 0.0),
-            Node::new(1, NodeType::Excitatory, 0.5, 0.99, 0.9, 0.9, 0.05, 0.0),
+            Node::new(0, NodeType::Excitatory, 0.3, 0.99, 0.9, 0.9, 0.0, 0.05, 0.0),
+            Node::new(1, NodeType::Excitatory, 0.5, 0.99, 0.9, 0.9, 0.0, 0.05, 0.0),
         ];
-        let connections = vec![Connection::new(0, 1, 0.8, 2.0, 1, 1.0, 1.0, 5.0, 5.0)];
+        let connections = vec![Connection::new(0, 1, 0.8, 2.0, 0, 1.0, 1.0, 5.0, 5.0)];
         Network::new(nodes, connections, vec![0])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Connection, Network, Node, NodeType};
+
+    #[test]
+    fn inhibitory_spikes_apply_divisive_normalization() {
+        let nodes = vec![
+            Node::new(0, NodeType::Excitatory, 0.3, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0),
+            Node::new(1, NodeType::Inhibitory, 0.3, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0),
+            Node::new(2, NodeType::Excitatory, 2.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.0),
+        ];
+        let connections = vec![
+            Connection::new(0, 2, 1.0, 2.0, 0, 1.0, 1.0, 5.0, 5.0),
+            Connection::new(1, 2, 1.0, 2.0, 0, 1.0, 1.0, 5.0, 5.0),
+        ];
+        let mut network = Network::new(nodes, connections, vec![0, 1]);
+
+        network.inject(&[(0, 1.0), (1, 1.0)]);
+        let _ = network.step(0);
+        let _ = network.step(1);
+
+        let target = network.node(2);
+        let expected = 1.0 / (1.0 + 0.5 * 1.0);
+        assert!((target.potential - expected).abs() < 1e-6);
+        assert!(target.activation < 1.0);
+    }
+
+    #[test]
+    fn memory_nodes_self_loop_retain_potential() {
+        let nodes = vec![Node::new(
+            0,
+            NodeType::Memory,
+            0.5,
+            0.99,
+            0.995,
+            0.98,
+            0.0,
+            0.0,
+            0.98,
+        )];
+        let connections = vec![Connection::new(0, 0, 0.4, 1.5, 0, 1.0, 1.0, 5.0, 5.0)];
+        let mut network = Network::new(nodes, connections, vec![]);
+
+        network.inject(&[(0, 1.0)]);
+        let first = network.step(0);
+        assert!(first.spikes.contains(&0));
+
+        let after_spike_threshold = network.node(0).effective_threshold();
+        assert!(after_spike_threshold < 0.5);
+
+        let _ = network.step(1);
+        let potential_after_one = network.node(0).potential;
+        assert!(potential_after_one > 0.3);
+
+        let _ = network.step(2);
+        let potential_after_two = network.node(0).potential;
+        assert!(potential_after_two > 0.25);
+    }
+
+    #[test]
+    fn memory_nodes_recover_threshold_after_inactivity() {
+        let nodes = vec![Node::new(
+            0,
+            NodeType::Memory,
+            0.6,
+            0.99,
+            0.99,
+            0.98,
+            0.0,
+            0.0,
+            0.7,
+        )];
+        let connections = vec![Connection::new(0, 0, 0.3, 1.0, 0, 1.0, 1.0, 5.0, 5.0)];
+        let mut network = Network::new(nodes, connections, vec![]);
+
+        network.inject(&[(0, 1.0)]);
+        let _ = network.step(0);
+        let lowered_threshold = network.node(0).effective_threshold();
+        assert!(lowered_threshold < 0.6);
+
+        for step in 1..=6 {
+            let _ = network.step(step);
+        }
+
+        let recovered_threshold = network.node(0).effective_threshold();
+        assert!(recovered_threshold > 0.58);
+        assert!(recovered_threshold < 0.62);
     }
 }
