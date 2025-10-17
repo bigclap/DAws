@@ -2,6 +2,9 @@ use std::collections::HashMap;
 
 use crate::io::{BinaryDecoder, TableEncoder};
 
+pub const MAX_DELAY: usize = 16;
+pub const ALPHA_KERNEL: [f32; 8] = [0.6, 0.9, 0.8, 0.5, 0.3, 0.15, 0.08, 0.04];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NodeType {
     Excitatory,
@@ -28,6 +31,9 @@ pub struct Node {
     pub eligibility: f32,
     pub last_spike_step: Option<usize>,
     pub inhibition_accumulator: f32,
+    pub future_exc: [f32; MAX_DELAY],
+    pub accum_exc: f32,
+    pub accum_inh: f32,
 }
 
 impl Node {
@@ -59,6 +65,9 @@ impl Node {
             eligibility: 0.0,
             last_spike_step: None,
             inhibition_accumulator: 0.0,
+            future_exc: [0.0; MAX_DELAY],
+            accum_exc: 0.0,
+            accum_inh: 0.0,
         }
     }
 
@@ -67,11 +76,26 @@ impl Node {
         self.base_threshold * modulation_scale + self.adaptation
     }
 
-    pub fn integrate_decay(&mut self) {
-        self.potential *= self.lambda_v;
+    pub fn step_integrate(&mut self) {
+        let incoming_exc = self.future_exc[0];
+        self.future_exc.rotate_left(1);
+        self.future_exc[MAX_DELAY - 1] = 0.0;
+
+        self.potential = self.potential * self.lambda_v + incoming_exc + self.accum_exc;
         self.adaptation *= self.lambda_h;
         self.activation *= self.activation_decay;
         self.modulation *= self.modulation_decay;
+
+        let inhibition = self.accum_inh.max(0.0);
+        if self.divisive_beta > 0.0 && (inhibition > 0.0 || self.adaptation > 0.0) {
+            let denom = 1.0 + self.divisive_beta * (inhibition + self.adaptation.max(0.0));
+            if denom > 0.0 {
+                self.potential /= denom;
+            }
+        }
+        self.inhibition_accumulator = inhibition;
+        self.accum_exc = 0.0;
+        self.accum_inh = 0.0;
     }
 
     pub fn on_spike(&mut self, step: usize) {
@@ -93,6 +117,9 @@ impl Node {
         self.last_spike_step = None;
         self.eligibility = 0.0;
         self.inhibition_accumulator = 0.0;
+        self.future_exc = [0.0; MAX_DELAY];
+        self.accum_exc = 0.0;
+        self.accum_inh = 0.0;
     }
 }
 
@@ -141,19 +168,6 @@ impl Connection {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EventKind {
-    Excitatory,
-    Inhibitory,
-}
-
-#[derive(Clone, Debug)]
-struct ScheduledEvent {
-    target: usize,
-    delta: f32,
-    kind: EventKind,
-}
-
 #[derive(Default, Debug, Clone)]
 pub struct StepReport {
     pub spikes: Vec<usize>,
@@ -165,30 +179,22 @@ pub struct Network {
     pub connections: Vec<Connection>,
     outgoing: Vec<Vec<usize>>,
     incoming: Vec<Vec<usize>>,
-    event_queue: Vec<Vec<ScheduledEvent>>,
-    max_delay: usize,
-    current_slot: usize,
     input_nodes: Vec<usize>,
 }
 
 impl Network {
     pub fn new(nodes: Vec<Node>, connections: Vec<Connection>, input_nodes: Vec<usize>) -> Self {
-        let max_delay = connections.iter().map(|c| c.delay).max().unwrap_or(0);
         let mut outgoing = vec![Vec::new(); nodes.len()];
         let mut incoming = vec![Vec::new(); nodes.len()];
         for (idx, conn) in connections.iter().enumerate() {
             outgoing[conn.from].push(idx);
             incoming[conn.to].push(idx);
         }
-        let queue_len = (max_delay + 1).max(1);
         Self {
             nodes,
             connections,
             outgoing,
             incoming,
-            event_queue: vec![Vec::new(); queue_len],
-            max_delay,
-            current_slot: 0,
             input_nodes,
         }
     }
@@ -202,16 +208,12 @@ impl Network {
             conn.last_post_spike = None;
             conn.last_pre_spike = None;
         }
-        for queue in &mut self.event_queue {
-            queue.clear();
-        }
-        self.current_slot = 0;
     }
 
     pub fn inject(&mut self, excitations: &[(usize, f32)]) {
         for &(id, value) in excitations {
             if let Some(node) = self.nodes.get_mut(id) {
-                node.potential += value;
+                node.accum_exc += value;
             }
         }
     }
@@ -219,24 +221,16 @@ impl Network {
     pub fn inject_embedding(&mut self, embedding: &[f32]) {
         for (node_id, value) in self.input_nodes.iter().zip(embedding.iter().copied()) {
             if let Some(node) = self.nodes.get_mut(*node_id) {
-                node.potential += value;
+                node.accum_exc += value;
             }
         }
     }
 
     pub fn step(&mut self, step: usize) -> StepReport {
         let mut report = StepReport::default();
-        self.apply_decay();
-        let due_events = self.pop_events();
-        for event in due_events {
-            if let Some(node) = self.nodes.get_mut(event.target) {
-                match event.kind {
-                    EventKind::Excitatory => node.potential += event.delta,
-                    EventKind::Inhibitory => {
-                        node.inhibition_accumulator += event.delta.abs();
-                    }
-                }
-            }
+
+        for node in &mut self.nodes {
+            node.step_integrate();
         }
 
         let modulatory_spikes: Vec<usize> = self
@@ -267,8 +261,6 @@ impl Network {
         }
         report.modulatory_spikes = modulatory_spikes;
 
-        self.apply_divisive_normalization();
-
         let mut spikes = Vec::new();
         for node in self.nodes.iter() {
             if node.node_type != NodeType::Modulatory && node.potential > node.effective_threshold()
@@ -282,12 +274,18 @@ impl Network {
             let outgoing = self.outgoing[node_id].clone();
             for conn_id in outgoing {
                 let conn = &self.connections[conn_id];
-                let kind = match node_type {
-                    NodeType::Inhibitory => EventKind::Inhibitory,
-                    _ => EventKind::Excitatory,
-                };
-                let delta = conn.weight;
-                self.schedule_event(conn.delay, conn.to, delta, kind);
+                match node_type {
+                    NodeType::Inhibitory => {
+                        if let Some(target) = self.nodes.get_mut(conn.to) {
+                            schedule_inhibition(target, conn.weight, conn.delay);
+                        }
+                    }
+                    _ => {
+                        if let Some(target) = self.nodes.get_mut(conn.to) {
+                            deliver(target, conn.weight, conn.delay);
+                        }
+                    }
+                }
                 let conn = &mut self.connections[conn_id];
                 conn.last_pre_spike = Some(step);
             }
@@ -302,53 +300,6 @@ impl Network {
         report.spikes = spikes;
 
         report
-    }
-
-    fn apply_decay(&mut self) {
-        for node in &mut self.nodes {
-            node.integrate_decay();
-        }
-    }
-
-    fn pop_events(&mut self) -> Vec<ScheduledEvent> {
-        if self.event_queue.is_empty() {
-            return Vec::new();
-        }
-        let due = std::mem::take(&mut self.event_queue[self.current_slot]);
-        self.current_slot = (self.current_slot + 1) % self.event_queue.len();
-        due
-    }
-
-    fn schedule_event(&mut self, delay: usize, target: usize, delta: f32, kind: EventKind) {
-        if self.event_queue.is_empty() {
-            return;
-        }
-        let actual_delay = delay.min(self.max_delay);
-        let slot = (self.current_slot + actual_delay) % self.event_queue.len();
-        self.event_queue[slot].push(ScheduledEvent {
-            target,
-            delta,
-            kind,
-        });
-    }
-
-    fn apply_divisive_normalization(&mut self) {
-        for node in &mut self.nodes {
-            if node.divisive_beta == 0.0 {
-                node.inhibition_accumulator = 0.0;
-                continue;
-            }
-            let inhibition = node.inhibition_accumulator.max(0.0);
-            if inhibition == 0.0 && node.adaptation <= 0.0 {
-                node.inhibition_accumulator = 0.0;
-                continue;
-            }
-            let denominator = 1.0 + node.divisive_beta * (inhibition + node.adaptation.max(0.0));
-            if denominator > 0.0 {
-                node.potential /= denominator;
-            }
-            node.inhibition_accumulator = 0.0;
-        }
     }
 
     pub fn active_ratio(&self, activation_threshold: f32) -> f32 {
@@ -454,6 +405,21 @@ impl Network {
     pub fn input_nodes(&self) -> &[usize] {
         &self.input_nodes
     }
+}
+
+fn deliver(node: &mut Node, weight: f32, delay: usize) {
+    let start = delay.min(MAX_DELAY - 1);
+    for (idx, coeff) in ALPHA_KERNEL.iter().enumerate() {
+        let slot = start + idx;
+        if slot >= MAX_DELAY {
+            break;
+        }
+        node.future_exc[slot] += weight * coeff;
+    }
+}
+
+fn schedule_inhibition(node: &mut Node, weight: f32, _delay: usize) {
+    node.accum_inh += weight.abs();
 }
 
 pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
@@ -567,7 +533,7 @@ mod tests {
         let _ = network.step(1);
 
         let target = network.node(2);
-        let expected = 1.0 / (1.0 + 0.5 * 1.0);
+        let expected = super::ALPHA_KERNEL[0] / (1.0 + 0.5 * 1.0);
         assert!((target.potential - expected).abs() < 1e-6);
         assert!(target.activation < 1.0);
     }
@@ -597,11 +563,16 @@ mod tests {
 
         let _ = network.step(1);
         let potential_after_one = network.node(0).potential;
-        assert!(potential_after_one > 0.3);
+        let expected_one = super::ALPHA_KERNEL[0] * 0.4;
+        assert!((potential_after_one - expected_one).abs() < 1e-6);
 
-        let _ = network.step(2);
+        let report_two = network.step(2);
+        assert!(report_two.spikes.contains(&0));
         let potential_after_two = network.node(0).potential;
-        assert!(potential_after_two > 0.25);
+        assert!(potential_after_two.abs() < 1e-6);
+
+        let report_three = network.step(3);
+        assert!(report_three.spikes.contains(&0));
     }
 
     #[test]
@@ -617,7 +588,7 @@ mod tests {
             0.0,
             0.7,
         )];
-        let connections = vec![Connection::new(0, 0, 0.3, 1.0, 0, 1.0, 1.0, 5.0, 5.0)];
+        let connections = vec![Connection::new(0, 0, 0.12, 1.0, 0, 1.0, 1.0, 5.0, 5.0)];
         let mut network = Network::new(nodes, connections, vec![]);
 
         network.inject(&[(0, 1.0)]);
@@ -632,5 +603,31 @@ mod tests {
         let recovered_threshold = network.node(0).effective_threshold();
         assert!(recovered_threshold > 0.58);
         assert!(recovered_threshold < 0.62);
+    }
+
+    #[test]
+    fn excitatory_spike_delivers_alpha_kernel_over_time() {
+        use super::ALPHA_KERNEL;
+
+        let nodes = vec![
+            Node::new(0, NodeType::Excitatory, 0.2, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0),
+            Node::new(1, NodeType::Excitatory, 10.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0),
+        ];
+        let connections = vec![Connection::new(0, 1, 1.0, 2.0, 0, 1.0, 1.0, 5.0, 5.0)];
+        let mut network = Network::new(nodes, connections, vec![0]);
+
+        network.inject(&[(0, 5.0)]);
+        let first = network.step(0);
+        assert!(first.spikes.contains(&0));
+
+        for (step, expected) in ALPHA_KERNEL.iter().copied().enumerate() {
+            let report = network.step(step + 1);
+            assert!(report.spikes.is_empty());
+            let potential = network.node(1).potential;
+            assert!(
+                (potential - expected).abs() < 1e-6,
+                "step {step}: expected {expected}, got {potential}"
+            );
+        }
     }
 }
