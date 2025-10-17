@@ -1,6 +1,6 @@
 //! Diffusion loop that stabilises the network state vector between graph steps.
 
-use crate::signal::Network;
+use core_graph::Network;
 
 #[derive(Clone, Copy, Debug)]
 /// Parameters controlling the semantic diffusion loop.
@@ -110,6 +110,23 @@ fn deterministic_noise(index: usize, iteration: usize, amplitude: f32) -> f32 {
     if amplitude == 0.0 {
         return 0.0;
     }
-    let phase = (index as f32 * 0.6180339 + iteration as f32 * 0.41421356).sin();
+    let phase = (index as f32 * 0.618_033_9 + iteration as f32 * 0.414_213_56).sin();
     phase * amplitude
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cosine_similarity, deterministic_noise};
+
+    #[test]
+    fn cosine_similarity_returns_one_for_zero_vectors() {
+        let a = [0.0f32; 3];
+        let b = [0.0f32; 3];
+        assert_eq!(cosine_similarity(&a, &b), 1.0);
+    }
+
+    #[test]
+    fn deterministic_noise_zero_amplitude_is_silent() {
+        assert_eq!(deterministic_noise(3, 7, 0.0), 0.0);
+    }
 }

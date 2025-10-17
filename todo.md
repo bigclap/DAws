@@ -1,7 +1,6 @@
 # TODO
 
 ## Architecture and Crate Layout
-- Split the prototype into the planned multi-crate workspace (`core_graph`, `core_rules`, `model_enc`, `model_dec`, `retriever`, `trainer`, `datasets`, `evalbench`, `cli`) with shared configuration in Cargo to reflect the E → S → D → E′ stack.
 - Replace the ad-hoc XOR demo wiring with reusable graph assembly, scheduler, and profiling hooks exposed from the dedicated crates.
 
 ## Signal Graph (S)

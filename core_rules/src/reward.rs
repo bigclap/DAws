@@ -2,8 +2,9 @@
 
 use std::collections::HashSet;
 
-use crate::diffusion::cosine_similarity;
-use crate::signal::Network;
+use core_graph::Network;
+
+use super::diffusion::cosine_similarity;
 
 #[derive(Clone, Copy, Debug)]
 /// Tunable coefficients governing the reward calculation.
@@ -85,4 +86,19 @@ fn logic_score(expected: &[usize], actual: &[usize]) -> f32 {
     let false_negative = expected_set.difference(&actual_set).count() as f32;
     let denom = expected_set.len() as f32;
     ((true_positive - false_positive - false_negative) / denom).clamp(-1.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::logic_score;
+
+    #[test]
+    fn empty_expected_penalises_spurious_spikes() {
+        assert_eq!(logic_score(&[], &[1, 2]), -1.0);
+    }
+
+    #[test]
+    fn perfect_match_scores_one() {
+        assert_eq!(logic_score(&[1, 2], &[1, 2]), 1.0);
+    }
 }

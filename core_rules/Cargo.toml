@@ -1,0 +1,10 @@
+[package]
+name = "core_rules"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+core_graph = { path = "../core_graph" }
+
+[dev-dependencies]
+approx = { workspace = true }

@@ -1,5 +1,5 @@
 use approx::assert_relative_eq;
-use DAws::signal::test_helpers;
+use core_graph::test_helpers;
 
 #[test]
 fn modulatory_nodes_temporarily_raise_thresholds() {

@@ -1,6 +1,8 @@
-use DAws::diffusion::{DiffusionConfig, DiffusionLoop};
-use DAws::io::{BinaryDecoder, TableEncoder};
-use DAws::signal::{build_xor_network, Network};
+use core_graph::Network;
+use core_rules::diffusion::{DiffusionConfig, DiffusionLoop};
+use evalbench::build_xor_network;
+use model_dec::BinaryDecoder;
+use model_enc::TableEncoder;
 use rstest::{fixture, rstest};
 
 type XorPipeline = (
