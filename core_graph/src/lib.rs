@@ -1,9 +1,5 @@
 //! Event-driven spiking network core with local plasticity helpers.
 
-use std::collections::HashMap;
-
-use crate::io::{BinaryDecoder, TableEncoder};
-
 /// Maximum discrete synaptic delay supported by the simulator.
 pub const MAX_DELAY: usize = 16;
 /// Alpha-kernel coefficients applied when delivering excitation.
@@ -48,6 +44,7 @@ pub struct Node {
 
 impl Node {
     /// Constructs a node with the supplied dynamics parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
         node_type: NodeType,
@@ -161,6 +158,7 @@ pub struct Connection {
 
 impl Connection {
     /// Creates a synapse with the provided STDP parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         from: usize,
         to: usize,
@@ -398,8 +396,8 @@ impl Network {
     fn register_pre_spike(&mut self, conn_id: usize, step: usize) {
         let to = self.connections[conn_id].to;
         let dst_last_spike = self.nodes[to].last_spike_step;
-        let dt = dst_last_spike.map(|last| step as f32 - last as f32);
         let conn = &mut self.connections[conn_id];
+        let dt = dst_last_spike.map(|last| step as f32 - last as f32);
         if let Some(dt) = dt {
             let tau = conn.tau_minus.max(1e-6);
             let decay = (-(dt) / tau).exp();
@@ -521,74 +519,6 @@ fn schedule_inhibition(node: &mut Node, weight: f32, _delay: usize) {
     node.accum_inh += weight.abs();
 }
 
-/// Builds a compact XOR reasoning graph used by integration tests and the CLI.
-pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
-    let mut nodes = Vec::new();
-    nodes.push(Node::new(
-        0,
-        NodeType::Excitatory,
-        0.4,
-        0.95,
-        0.9,
-        0.3,
-        0.0,
-        0.1,
-        0.0,
-    ));
-    nodes.push(Node::new(
-        1,
-        NodeType::Excitatory,
-        0.4,
-        0.95,
-        0.9,
-        0.3,
-        0.0,
-        0.1,
-        0.0,
-    ));
-    nodes.push(Node::new(
-        2,
-        NodeType::Excitatory,
-        0.7,
-        0.98,
-        0.9,
-        0.7,
-        0.0,
-        0.05,
-        0.0,
-    ));
-    nodes.push(Node::new(
-        3,
-        NodeType::Modulatory,
-        1.1,
-        0.98,
-        0.9,
-        0.6,
-        0.0,
-        0.05,
-        0.0,
-    ));
-
-    let mut connections = Vec::new();
-    connections.push(Connection::new(0, 2, 1.0, 3.0, 0, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(1, 2, 1.0, 3.0, 0, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(0, 3, 0.7, 2.0, 0, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(1, 3, 0.7, 2.0, 0, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(3, 2, 2.5, 3.0, 0, 1.0, 1.0, 5.0, 5.0));
-
-    let input_nodes = vec![0, 1];
-    let network = Network::new(nodes, connections, input_nodes);
-
-    let mut table = HashMap::new();
-    table.insert("0 0".to_string(), vec![0.0, 0.0]);
-    table.insert("0 1".to_string(), vec![0.0, 1.0]);
-    table.insert("1 0".to_string(), vec![1.0, 0.0]);
-    table.insert("1 1".to_string(), vec![1.0, 1.0]);
-    let encoder = TableEncoder::new(table);
-    let decoder = BinaryDecoder::new(0.5);
-    (network, encoder, decoder, 2)
-}
-
 pub mod test_helpers {
     use super::{Connection, Network, Node, NodeType};
 
@@ -613,7 +543,7 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::{Connection, Network, Node, NodeType};
+    use super::{Connection, Network, Node, NodeType, ALPHA_KERNEL};
 
     #[test]
     fn inhibitory_spikes_apply_divisive_normalization() {
@@ -633,7 +563,7 @@ mod tests {
         let _ = network.step(1);
 
         let target = network.node(2);
-        let expected = super::ALPHA_KERNEL[0] / (1.0 + 0.5 * 1.0);
+        let expected = ALPHA_KERNEL[0] / (1.0 + 0.5 * 1.0);
         assert!((target.potential - expected).abs() < 1e-6);
         assert!(target.activation < 1.0);
     }
@@ -663,7 +593,7 @@ mod tests {
 
         let _ = network.step(1);
         let potential_after_one = network.node(0).potential;
-        let expected_one = super::ALPHA_KERNEL[0] * 0.4;
+        let expected_one = ALPHA_KERNEL[0] * 0.4;
         assert!((potential_after_one - expected_one).abs() < 1e-6);
 
         let report_two = network.step(2);
@@ -707,8 +637,6 @@ mod tests {
 
     #[test]
     fn excitatory_spike_delivers_alpha_kernel_over_time() {
-        use super::ALPHA_KERNEL;
-
         let nodes = vec![
             Node::new(0, NodeType::Excitatory, 0.2, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0),
             Node::new(1, NodeType::Excitatory, 10.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0),

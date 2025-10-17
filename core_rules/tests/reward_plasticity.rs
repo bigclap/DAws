@@ -1,5 +1,5 @@
-use DAws::reward::{RewardCalculator, RewardConfig};
-use DAws::signal::test_helpers;
+use core_graph::test_helpers;
+use core_rules::reward::{RewardCalculator, RewardConfig};
 
 #[test]
 fn reward_modulated_stdp_increases_weight_on_positive_reward() {

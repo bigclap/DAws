@@ -1,7 +1,7 @@
 //! CLI entry point that showcases the reasoning pipeline on an XOR task.
 
-use DAws::diffusion::{DiffusionConfig, DiffusionLoop};
-use DAws::signal::build_xor_network;
+use core_rules::diffusion::{DiffusionConfig, DiffusionLoop};
+use evalbench::build_xor_network;
 
 /// Runs the XOR demonstration and prints inference diagnostics.
 fn main() {

@@ -1,4 +1,4 @@
-//! Minimal embedding encoder/decoder utilities used by the examples.
+//! Minimal embedding encoder utilities used by the examples.
 
 use std::collections::HashMap;
 
@@ -30,24 +30,18 @@ impl TableEncoder {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-/// Binary threshold decoder translating scalar activations to "0" or "1".
-pub struct BinaryDecoder {
-    threshold: f32,
-}
+#[cfg(test)]
+mod tests {
+    use super::TableEncoder;
+    use std::collections::HashMap;
 
-impl BinaryDecoder {
-    /// Constructs a decoder that emits `"1"` when the value exceeds `threshold`.
-    pub fn new(threshold: f32) -> Self {
-        Self { threshold }
-    }
+    #[test]
+    fn unseen_token_returns_zeros() {
+        let mut table = HashMap::new();
+        table.insert("hello".to_string(), vec![1.0, 0.5]);
+        let encoder = TableEncoder::new(table);
 
-    /// Converts a scalar activation into a string class label.
-    pub fn decode(&self, value: f32) -> String {
-        if value > self.threshold {
-            "1".to_string()
-        } else {
-            "0".to_string()
-        }
+        assert_eq!(encoder.dimension(), 2);
+        assert_eq!(encoder.encode("missing"), vec![0.0, 0.0]);
     }
 }

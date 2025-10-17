@@ -1,0 +1,13 @@
+[package]
+name = "evalbench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+core_graph = { path = "../core_graph" }
+model_enc = { path = "../model_enc" }
+model_dec = { path = "../model_dec" }
+
+[dev-dependencies]
+rstest = { workspace = true }
+core_rules = { path = "../core_rules" }
