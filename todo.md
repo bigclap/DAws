@@ -13,7 +13,6 @@
 ## Training and Adaptation
 
 ## Evaluation and Profiling
-- Create the synthetic evaluation bench covering XOR, analogies, stack/parentheses tasks, and long-context retrieval episodes with reporting on accuracy and cosine thresholds.
 - Instrument the pipeline with `tracing`, `pprof-rs`, and energy usage metrics (active nodes/edges, wall time per iteration, memory fragmentation).
 - Implement convergence reporting for diffusion (#iterations to stop, monotonicity of `J_t`) and enforce iteration hard caps.
 

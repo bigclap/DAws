@@ -13,10 +13,10 @@
 - Replaced the XOR demo plumbing with reusable graph assembly, scheduling, and profiling components shared across crates.
 - Implemented structural plasticity with co-activation counters, growth/pruning rules, and delay retuning informed by eligibility traces.
 - Extended node state handling with energy caps, NaN guards, and episodic reset policies aligned with production requirements.
-- Instrumented the diffusion loop with configurable convergence diagnostics (J_t, stability streaks, energy monotonicity) and
-  stop criteria aligned with the roadmap.
+- Instrumented the diffusion loop with configurable convergence diagnostics (J_t, stability streaks, energy monotonicity) and stop criteria aligned with the roadmap.
 - Replaced the lookup-table encoder/decoder with a Candle-backed BERT text encoder, Transformer-GRU decoder, and cosine-aligned loss used across the workspace tests.
 - Built safetensors/parquet IO covering embedding tables, graph snapshots, and retriever KV memories with end-to-end tests.
 - Implemented the ANN/HNSW retriever crate with persistent KV storage and diffusion recruitment APIs.
 - Author the offline decoder trainer with mmap dataset loader, AdamW schedule (warmup + cosine), optional mixed precision, and validation metrics (cosine@median, retrieval rank@k, distinct-n, ppl surrogate).
 - Added online plasticity routines that perform reward-modulated updates on schedule, handle structural pruning/growth, and retain eligibility traces for inspection.
+- Created a synthetic evaluation bench covering XOR, analogies, stack/parentheses, and long-context retrieval tasks with accuracy and cosine reporting.
