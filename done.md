@@ -18,3 +18,4 @@
 - Replaced the lookup-table encoder/decoder with a Candle-backed BERT text encoder, Transformer-GRU decoder, and cosine-aligned loss used across the workspace tests.
 - Built safetensors/parquet IO covering embedding tables, graph snapshots, and retriever KV memories with end-to-end tests.
 - Implemented the ANN/HNSW retriever crate with persistent KV storage and diffusion recruitment APIs.
+- Author the offline decoder trainer with mmap dataset loader, AdamW schedule (warmup + cosine), optional mixed precision, and validation metrics (cosine@median, retrieval rank@k, distinct-n, ppl surrogate).
