@@ -14,3 +14,4 @@
 - Extended node state handling with energy caps, NaN guards, and episodic reset policies aligned with production requirements.
 - Instrumented the diffusion loop with configurable convergence diagnostics (J_t, stability streaks, energy monotonicity) and
   stop criteria aligned with the roadmap.
+- Replaced the lookup-table encoder/decoder with a Candle-backed BERT text encoder, Transformer-GRU decoder, and cosine-aligned loss used across the workspace tests.

@@ -7,7 +7,6 @@
 ## Diffusion Loop (D)
 
 ## Encoder/Decoder (E/E′)
-- Swap the table encoder/decoder pair for Candle-backed models: load a frozen text encoder (`e5-small` or MiniLM) and implement the Transformer/GRU decoder with virtual prefix tokens and cosine-aligned loss.
 - Build safetensors/parquet IO for embeddings, graph snapshots (`*.stt`, `*.gbin`), and KV memories (`hnsw.index`, `vecs.st`, `meta.parquet`).
 
 ## Retriever and Memory
