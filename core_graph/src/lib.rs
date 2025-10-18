@@ -10,6 +10,58 @@ pub use profiling::{NetworkProfiler, ProfileSummary, ProfilerConfig, StepObserve
 pub const MAX_DELAY: usize = 16;
 /// Alpha-kernel coefficients applied when delivering excitation.
 pub const ALPHA_KERNEL: [f32; 8] = [0.6, 0.9, 0.8, 0.5, 0.3, 0.15, 0.08, 0.04];
+/// Time window (in steps) used when estimating co-activation intensity.
+const COACTIVATION_WINDOW: f32 = 8.0;
+
+#[derive(Clone, Copy, Debug)]
+/// Configuration for the structural plasticity maintenance pass.
+pub struct StructuralPlasticityConfig {
+    /// Multiplicative decay applied to the running co-activation counter each pass.
+    pub coactivation_decay: f32,
+    /// Minimum co-activation required to keep a connection alive when inactive.
+    pub prune_threshold: f32,
+    /// Number of consecutive steps without presynaptic spikes before pruning is considered.
+    pub prune_inactivity_steps: usize,
+    /// Co-activation required to regrow a previously pruned connection.
+    pub growth_threshold: f32,
+    /// Weight increment applied when re-activating a dormant connection.
+    pub growth_increment: f32,
+    /// Smallest permissible synaptic weight.
+    pub weight_floor: f32,
+    /// Learning rate that controls how aggressively delays follow the averaged latency.
+    pub delay_learning_rate: f32,
+    /// Minimum synaptic delay enforced during retuning.
+    pub min_delay: usize,
+    /// Maximum synaptic delay enforced during retuning.
+    pub max_delay: usize,
+}
+
+impl Default for StructuralPlasticityConfig {
+    fn default() -> Self {
+        Self {
+            coactivation_decay: 0.95,
+            prune_threshold: 0.1,
+            prune_inactivity_steps: 8,
+            growth_threshold: 0.5,
+            growth_increment: 0.05,
+            weight_floor: 0.0,
+            delay_learning_rate: 0.25,
+            min_delay: 0,
+            max_delay: MAX_DELAY - 1,
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+/// Summary describing the structural plasticity adjustments performed in a pass.
+pub struct StructuralChangeSummary {
+    /// Number of connections that had their delay adjusted.
+    pub retuned_delays: usize,
+    /// Number of connections whose weight was pruned to the floor.
+    pub pruned_connections: usize,
+    /// Number of connections that were regrown after previously being pruned.
+    pub regrown_connections: usize,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// Functional category assigned to a [`Node`].
@@ -160,6 +212,8 @@ pub struct Connection {
     pub tau_minus: f32,
     pub last_pre_spike: Option<usize>,
     pub last_post_spike: Option<usize>,
+    pub coactivation: f32,
+    pub inactivity_steps: usize,
 }
 
 impl Connection {
@@ -193,6 +247,8 @@ impl Connection {
             tau_minus,
             last_pre_spike: None,
             last_post_spike: None,
+            coactivation: 0.0,
+            inactivity_steps: 0,
         }
     }
 }
@@ -244,6 +300,8 @@ impl Network {
             conn.used_step = 0;
             conn.last_post_spike = None;
             conn.last_pre_spike = None;
+            conn.coactivation = 0.0;
+            conn.inactivity_steps = 0;
         }
     }
 
@@ -268,6 +326,10 @@ impl Network {
     /// Advances the network by one discrete step and returns fired nodes.
     pub fn step(&mut self, step: usize) -> StepReport {
         let mut report = StepReport::default();
+
+        for conn in &mut self.connections {
+            conn.inactivity_steps = conn.inactivity_steps.saturating_add(1);
+        }
 
         for node in &mut self.nodes {
             node.step_integrate();
@@ -410,11 +472,13 @@ impl Network {
             conn.elig_fast -= conn.a_minus * decay;
             conn.elig_slow -= 0.1 * conn.a_minus * decay;
             conn.dt_ema = 0.85 * conn.dt_ema + 0.15 * dt;
+            accumulate_coactivation(conn, dt);
         } else {
             conn.dt_ema *= 0.85;
         }
         conn.last_pre_spike = Some(step);
         conn.used_step = step;
+        conn.inactivity_steps = 0;
     }
 
     /// Updates STDP traces for a postsynaptic spike event.
@@ -429,12 +493,14 @@ impl Network {
                 conn.elig_fast += conn.a_plus * factor;
                 conn.elig_slow += 0.1 * conn.a_plus * factor;
                 conn.dt_ema = 0.85 * conn.dt_ema + 0.15 * dt;
+                accumulate_coactivation(conn, dt);
             }
         } else {
             conn.dt_ema *= 0.85;
         }
         conn.last_post_spike = Some(step);
         conn.used_step = step;
+        conn.inactivity_steps = 0;
     }
 
     /// Immutable access to a node by identifier.
@@ -506,6 +572,55 @@ impl Network {
     pub fn input_nodes(&self) -> &[usize] {
         &self.input_nodes
     }
+
+    /// Applies structural plasticity rules over all connections.
+    pub fn apply_structural_plasticity(
+        &mut self,
+        config: &StructuralPlasticityConfig,
+    ) -> StructuralChangeSummary {
+        let mut summary = StructuralChangeSummary::default();
+        for conn in &mut self.connections {
+            conn.coactivation *= config.coactivation_decay.clamp(0.0, 1.0);
+
+            if conn.weight <= config.weight_floor + f32::EPSILON
+                && conn.coactivation > config.growth_threshold
+            {
+                let new_weight = (conn.weight + config.growth_increment).min(conn.max_weight);
+                if new_weight > conn.weight {
+                    conn.weight = new_weight;
+                    summary.regrown_connections += 1;
+                    conn.inactivity_steps = 0;
+                    conn.coactivation = 0.0;
+                }
+            }
+
+            if conn.inactivity_steps >= config.prune_inactivity_steps
+                && conn.coactivation < config.prune_threshold
+                && conn.weight > config.weight_floor + f32::EPSILON
+            {
+                conn.weight = config.weight_floor;
+                summary.pruned_connections += 1;
+                conn.coactivation = 0.0;
+            }
+
+            let target_delay = conn
+                .dt_ema
+                .max(config.min_delay as f32)
+                .min(config.max_delay as f32);
+            if target_delay.is_finite() {
+                let delay_float = conn.delay as f32;
+                let updated = delay_float
+                    + config.delay_learning_rate.clamp(0.0, 1.0) * (target_delay - delay_float);
+                let new_delay = updated.round() as usize;
+                let new_delay = new_delay.clamp(config.min_delay, config.max_delay);
+                if new_delay != conn.delay {
+                    conn.delay = new_delay;
+                    summary.retuned_delays += 1;
+                }
+            }
+        }
+        summary
+    }
 }
 
 /// Schedules delayed excitation delivery using the alpha kernel.
@@ -523,6 +638,16 @@ fn deliver(node: &mut Node, weight: f32, delay: usize) {
 /// Accumulates inhibition for divisive normalisation.
 fn schedule_inhibition(node: &mut Node, weight: f32, _delay: usize) {
     node.accum_inh += weight.abs();
+}
+
+fn accumulate_coactivation(conn: &mut Connection, dt: f32) {
+    if !dt.is_finite() {
+        return;
+    }
+    let magnitude = (COACTIVATION_WINDOW - dt.abs()).max(0.0) / COACTIVATION_WINDOW;
+    if magnitude > 0.0 {
+        conn.coactivation += magnitude;
+    }
 }
 
 pub mod test_helpers {
@@ -549,7 +674,30 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALPHA_KERNEL, Connection, Network, Node, NodeType};
+    use super::{
+        ALPHA_KERNEL, Connection, Network, Node, NodeType, StructuralPlasticityConfig, test_helpers,
+    };
+
+    fn plasticity_config_for_tests() -> StructuralPlasticityConfig {
+        StructuralPlasticityConfig {
+            prune_inactivity_steps: 3,
+            prune_threshold: 0.2,
+            growth_threshold: 0.4,
+            growth_increment: 0.2,
+            delay_learning_rate: 0.5,
+            ..StructuralPlasticityConfig::default()
+        }
+    }
+
+    fn stimulate_pair(network: &mut Network, start_step: usize) {
+        network.inject(&[(0, 1.0)]);
+        let report_pre = network.step(start_step);
+        assert!(report_pre.spikes.contains(&0));
+
+        network.inject(&[(1, 0.4)]);
+        let report_post = network.step(start_step + 1);
+        assert!(report_post.spikes.contains(&1));
+    }
 
     #[test]
     fn inhibitory_spikes_apply_divisive_normalization() {
@@ -667,7 +815,7 @@ mod tests {
 
     #[test]
     fn eligibility_traces_update_and_decay() {
-        let mut network = super::test_helpers::simple_pair();
+        let mut network = test_helpers::simple_pair();
 
         network.inject(&[(0, 1.0)]);
         let _ = network.step(0);
@@ -694,5 +842,78 @@ mod tests {
         let (fast_after, slow_after) = network.connection_traces(0);
         assert!((fast_after - fast_before * 0.98).abs() < 1e-6);
         assert!((slow_after - slow_before * 0.999).abs() < 1e-6);
+    }
+
+    #[test]
+    fn coactivation_accumulates_for_spike_pairs() {
+        let mut network = test_helpers::simple_pair();
+        network.node_mut(1).base_threshold = 0.2;
+
+        stimulate_pair(&mut network, 0);
+
+        let coactivation = network.connections[0].coactivation;
+        assert!(
+            coactivation > 0.0,
+            "coactivation should increase after paired spikes"
+        );
+    }
+
+    #[test]
+    fn structural_plasticity_prunes_inactive_connections() {
+        let mut network = test_helpers::simple_pair();
+        network.connections[0].weight = 0.6;
+        network.connections[0].max_weight = 1.0;
+        let config = plasticity_config_for_tests();
+
+        for step in 0..=4 {
+            let _ = network.step(step);
+        }
+
+        let summary = network.apply_structural_plasticity(&config);
+        assert_eq!(summary.pruned_connections, 1);
+        assert!(network.connections[0].weight <= config.weight_floor + 1e-6);
+    }
+
+    #[test]
+    fn structural_plasticity_regrows_after_activity() {
+        let mut network = test_helpers::simple_pair();
+        network.node_mut(1).base_threshold = 0.2;
+        let config = plasticity_config_for_tests();
+
+        for step in 0..=4 {
+            let _ = network.step(step);
+        }
+        let _ = network.apply_structural_plasticity(&config);
+        assert!(network.connections[0].weight <= config.weight_floor + 1e-6);
+
+        let mut step = 5;
+        for _ in 0..3 {
+            stimulate_pair(&mut network, step);
+            step += 2;
+        }
+
+        network.connections[0].coactivation = 1.0; // ensure above threshold
+        let summary = network.apply_structural_plasticity(&config);
+        assert_eq!(summary.regrown_connections, 1);
+        assert!(network.connections[0].weight > config.weight_floor);
+    }
+
+    #[test]
+    fn structural_plasticity_retunes_delay_towards_latency_estimate() {
+        let mut network = test_helpers::simple_pair();
+        let mut config = StructuralPlasticityConfig {
+            delay_learning_rate: 0.5,
+            prune_inactivity_steps: usize::MAX,
+            ..StructuralPlasticityConfig::default()
+        };
+        config.prune_threshold = -1.0;
+        config.growth_threshold = 100.0;
+
+        network.connections[0].delay = 1;
+        network.connections[0].dt_ema = 5.0;
+
+        let summary = network.apply_structural_plasticity(&config);
+        assert_eq!(summary.retuned_delays, 1);
+        assert_eq!(network.connections[0].delay, 3);
     }
 }

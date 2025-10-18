@@ -8,3 +8,4 @@
 - Documented all exposed modules with Rustdoc so that `cargo doc` surfaces architectural intent directly from the code.
 - Split the prototype into a multi-crate workspace (`core_graph`, `core_rules`, `model_enc`, `model_dec`, `retriever`, `trainer`, `datasets`, `evalbench`, `cli`) with shared dependencies to mirror the E → S → D → E′ stack.
 - Replaced the XOR demo plumbing with reusable graph assembly, scheduling, and profiling components shared across crates.
+- Implemented structural plasticity with co-activation counters, growth/pruning rules, and delay retuning informed by eligibility traces.
