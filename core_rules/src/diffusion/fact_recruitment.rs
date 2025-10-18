@@ -33,7 +33,7 @@ impl FactRecruitment {
         self.retriever.is_empty()
     }
 
-    pub fn recruit(&self, query: &[f32]) -> Option<Vec<f32>> {
+    pub fn recruit(&mut self, query: &[f32]) -> Option<Vec<f32>> {
         if self.is_empty() || query.is_empty() {
             return None;
         }
