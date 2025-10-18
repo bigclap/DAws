@@ -1,7 +1,6 @@
 # TODO
 
 ## Architecture and Crate Layout
-- Replace the ad-hoc XOR demo wiring with reusable graph assembly, scheduler, and profiling hooks exposed from the dedicated crates.
 
 ## Signal Graph (S)
 - Implement structural plasticity: co-activation counters, growth/pruning rules, and delay retuning driven by the eligibility traces.

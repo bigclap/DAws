@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+core_graph = { path = "../core_graph" }
 core_rules = { path = "../core_rules" }
 evalbench = { path = "../evalbench" }
