@@ -8,7 +8,9 @@ use std::fs;
 use std::path::Path;
 
 use metadata::{read_metadata, write_metadata};
-use tensors::{read_f32_matrix, read_keys, write_f32_matrix, write_keys};
+use tensors::{
+    read_f32_matrix, read_f32_vector, read_keys, write_f32_matrix, write_f32_vector, write_keys,
+};
 
 use thiserror::Error;
 
@@ -19,12 +21,14 @@ pub use metadata::MemoryMetadata;
 const VECTORS_TENSOR: &str = "vectors";
 const VALUES_TENSOR: &str = "values";
 const KEYS_TENSOR: &str = "keys";
+const GATES_TENSOR: &str = "gates";
 
 const INDEX_FILE: &str = "hnsw.index";
 const VECTORS_FILE: &str = "vecs.st";
 const VALUES_FILE: &str = "vals.st";
 const KEYS_FILE: &str = "keys.st";
 const META_FILE: &str = "meta.parquet";
+const GATES_FILE: &str = "gates.st";
 
 /// Snapshot of the persistent ANN memory files.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +41,8 @@ pub struct KvMemorySnapshot {
     pub vectors: Vec<f32>,
     /// Flattened value payload stored row-major.
     pub values: Vec<f32>,
+    /// Per-record memory gate values.
+    pub gates: Vec<f32>,
     /// Number of vectors contained in the payload.
     pub num_vectors: usize,
     /// Dimensionality of each embedding vector.
@@ -53,6 +59,7 @@ impl KvMemorySnapshot {
         keys: Vec<u64>,
         vectors: Vec<f32>,
         values: Vec<f32>,
+        gates: Vec<f32>,
         num_vectors: usize,
         dimension: usize,
         value_dimension: usize,
@@ -89,11 +96,18 @@ impl KvMemorySnapshot {
                 found: keys.len(),
             });
         }
+        if !gates.is_empty() && gates.len() != num_vectors {
+            return Err(MemorySnapshotError::InvalidShape {
+                expected: num_vectors,
+                found: gates.len(),
+            });
+        }
         Ok(Self {
             index,
             keys,
             vectors,
             values,
+            gates,
             num_vectors,
             dimension,
             value_dimension,
@@ -120,6 +134,9 @@ impl KvMemorySnapshot {
             self.value_dimension,
         )?;
         write_keys(dir.join(KEYS_FILE), KEYS_TENSOR, &self.keys)?;
+        if !self.gates.is_empty() {
+            write_f32_vector(dir.join(GATES_FILE), GATES_TENSOR, &self.gates)?;
+        }
         write_metadata(
             dir.join(META_FILE),
             &MemoryMetadata {
@@ -140,6 +157,21 @@ impl KvMemorySnapshot {
         let (values, val_rows, val_dims) = read_f32_matrix(dir.join(VALUES_FILE), VALUES_TENSOR)?;
         let keys = read_keys(dir.join(KEYS_FILE), KEYS_TENSOR)?;
         let meta = read_metadata(dir.join(META_FILE))?;
+        let gates = match read_f32_vector(dir.join(GATES_FILE), GATES_TENSOR) {
+            Ok((data, len)) => {
+                if len != meta.num_vectors {
+                    return Err(MemorySnapshotError::InvalidShape {
+                        expected: meta.num_vectors,
+                        found: len,
+                    });
+                }
+                data
+            }
+            Err(MemorySnapshotError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                Vec::new()
+            }
+            Err(err) => return Err(err),
+        };
         if vec_rows != meta.num_vectors
             || vec_dims != meta.dimension
             || val_rows != meta.num_vectors
@@ -152,6 +184,7 @@ impl KvMemorySnapshot {
             keys,
             vectors,
             values,
+            gates,
             meta.num_vectors,
             meta.dimension,
             meta.value_dimension,
@@ -203,6 +236,7 @@ mod tests {
             vec![7, 8],
             vec![0.1, 0.2, 0.3, 0.4],
             vec![0.5, 0.6, 0.7, 0.8],
+            vec![0.9, 0.4],
             2,
             2,
             2,
@@ -247,5 +281,26 @@ mod tests {
         .unwrap();
         let err = KvMemorySnapshot::read_all(path).unwrap_err();
         assert!(matches!(err, MemorySnapshotError::InconsistentPayload));
+    }
+
+    #[test]
+    fn gates_file_is_optional_for_backwards_compatibility() {
+        let dir = tempdir().unwrap();
+        let path = dir.path();
+        write_index(path.join(INDEX_FILE), &[0]).unwrap();
+        write_f32_matrix(path.join(VECTORS_FILE), VECTORS_TENSOR, &[1.0, 0.0], 1, 2).unwrap();
+        write_f32_matrix(path.join(VALUES_FILE), VALUES_TENSOR, &[1.0, 0.0], 1, 2).unwrap();
+        write_keys(path.join(KEYS_FILE), KEYS_TENSOR, &[1]).unwrap();
+        write_metadata(
+            path.join(META_FILE),
+            &MemoryMetadata {
+                num_vectors: 1,
+                dimension: 2,
+                value_dimension: 2,
+            },
+        )
+        .unwrap();
+        let snapshot = KvMemorySnapshot::read_all(path).unwrap();
+        assert!(snapshot.gates.is_empty());
     }
 }
