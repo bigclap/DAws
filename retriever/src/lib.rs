@@ -1,5 +1,9 @@
 //! Placeholder ANN retriever module for the multi-crate workspace skeleton.
 
+pub mod io;
+
+pub use io::{KvMemorySnapshot, MemoryMetadata, MemorySnapshotError};
+
 /// Minimal configuration stub so downstream crates can be wired incrementally.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RetrieverConfig {

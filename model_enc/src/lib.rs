@@ -1,5 +1,11 @@
 //! Candle-backed text encoder utilities used by the diffusion stack.
 
+pub mod snapshot;
+pub mod table;
+
+pub use snapshot::{EmbeddingSnapshot, EmbeddingSnapshotError};
+pub use table::TableEncoder;
+
 use std::fs;
 
 use candle_core::{D, DType, Device, IndexOp, Tensor};
