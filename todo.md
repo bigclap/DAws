@@ -5,7 +5,6 @@
 ## Signal Graph (S)
 
 ## Diffusion Loop (D)
-- Upgrade the diffusion policy to follow the scheduled alpha_t and sigma_t annealing, entropy-aware amplification/suppression, and ANN-based fact recruitment.
 - Track convergence diagnostics (`J_t`, stability, energy monotonicity) and expose stop criteria aligned with the roadmap.
 
 ## Encoder/Decoder (E/E′)

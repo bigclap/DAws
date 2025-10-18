@@ -103,10 +103,12 @@ mod tests {
         let mut network = builder.build().expect("valid network");
 
         let mut diffusion = DiffusionLoop::new(crate::diffusion::DiffusionConfig {
-            alpha: 0.5,
+            alpha_schedule: crate::diffusion::AnnealingSchedule::constant(0.5),
+            sigma_schedule: crate::diffusion::AnnealingSchedule::constant(0.0),
             tolerance: 1e-3,
             max_iters: 5,
-            noise: 0.0,
+            entropy_policy: crate::diffusion::EntropyPolicy::default(),
+            fact_recruitment: None,
         });
         let scheduler = ReasoningScheduler::new(SchedulerConfig { settle_steps: 2 });
 

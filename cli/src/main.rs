@@ -1,7 +1,7 @@
 //! CLI entry point that showcases the reasoning pipeline on an XOR task.
 
 use core_graph::{NetworkProfiler, ProfilerConfig};
-use core_rules::diffusion::{DiffusionConfig, DiffusionLoop};
+use core_rules::diffusion::{AnnealingSchedule, DiffusionConfig, DiffusionLoop, EntropyPolicy};
 use core_rules::scheduler::{ReasoningScheduler, SchedulerConfig};
 use evalbench::build_xor_network;
 
@@ -9,10 +9,12 @@ use evalbench::build_xor_network;
 fn main() {
     let (mut network, encoder, decoder, output_node) = build_xor_network();
     let mut diffusion = DiffusionLoop::new(DiffusionConfig {
-        alpha: 0.5,
+        alpha_schedule: AnnealingSchedule::constant(0.5),
+        sigma_schedule: AnnealingSchedule::constant(0.0),
         tolerance: 1e-3,
         max_iters: 20,
-        noise: 0.0,
+        entropy_policy: EntropyPolicy::default(),
+        fact_recruitment: None,
     });
     let scheduler = ReasoningScheduler::new(SchedulerConfig { settle_steps: 3 });
     let mut profiler = NetworkProfiler::new(ProfilerConfig {
