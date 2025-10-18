@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 core_graph = { path = "../core_graph" }
+retriever = { path = "../retriever" }
 
 [dev-dependencies]
 approx = { workspace = true }

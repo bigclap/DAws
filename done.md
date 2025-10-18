@@ -4,6 +4,7 @@
 - Implemented an event-driven spiking network with excitatory, inhibitory, modulatory, and memory node dynamics, divisive normalisation, alpha-kernel delivery, and reward-modulated STDP traces.
 - Added configurable inhibitory pools with regional detectors to drive winner-take-all suppression and gate refresh monitoring.
 - Added deterministic diffusion refinement with cosine-based convergence tracking to stabilise activation states between graph steps.
+- Upgraded the diffusion loop with annealed alpha/sigma schedules, entropy-scaled gain, and ANN fact recruitment backed by tests.
 - Provided basic lookup-table encoder and binary decoder utilities so the end-to-end example can run without external model weights.
 - Covered the current surface area with unit tests exercising diffusion convergence, modulation, memory retention, divisive inhibition, eligibility decay, reward application, and XOR correctness.
 - Documented all exposed modules with Rustdoc so that `cargo doc` surfaces architectural intent directly from the code.
