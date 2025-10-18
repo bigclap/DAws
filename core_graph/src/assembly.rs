@@ -1,6 +1,6 @@
 //! Helpers for declarative network assembly used by demos and tests.
 
-use crate::{Connection, Network, Node, NodeType, pools::InhibitoryPoolConfig};
+use crate::{Connection, EpisodeResetPolicy, Network, Node, NodeType, pools::InhibitoryPoolConfig};
 
 /// Parameters describing the static configuration of a [`Node`].
 #[derive(Clone, Debug)]
@@ -21,6 +21,12 @@ pub struct NodeParams {
     pub kappa: f32,
     /// Modulation decay applied per step.
     pub modulation_decay: f32,
+    /// Maximum energy allowed for the node's tracked states.
+    pub energy_cap: f32,
+    /// Optional number of steps between episodic resets.
+    pub episode_period: Option<usize>,
+    /// Policy executed when the episode boundary is reached.
+    pub reset_policy: EpisodeResetPolicy,
 }
 
 impl NodeParams {
@@ -35,6 +41,9 @@ impl NodeParams {
         divisive_beta: f32,
         kappa: f32,
         modulation_decay: f32,
+        energy_cap: f32,
+        episode_period: Option<usize>,
+        reset_policy: EpisodeResetPolicy,
     ) -> Self {
         Self {
             node_type,
@@ -45,6 +54,9 @@ impl NodeParams {
             divisive_beta,
             kappa,
             modulation_decay,
+            energy_cap,
+            episode_period,
+            reset_policy,
         }
     }
 }
@@ -60,6 +72,9 @@ impl Default for NodeParams {
             divisive_beta: 0.0,
             kappa: 0.0,
             modulation_decay: 0.95,
+            energy_cap: 10.0,
+            episode_period: None,
+            reset_policy: EpisodeResetPolicy::None,
         }
     }
 }
@@ -223,6 +238,9 @@ impl GraphBuilder {
                     params.divisive_beta,
                     params.kappa,
                     params.modulation_decay,
+                    params.energy_cap,
+                    params.episode_period,
+                    params.reset_policy,
                 )
             })
             .collect();
@@ -267,6 +285,7 @@ mod tests {
             divisive_beta: 0.1,
             kappa: 0.05,
             modulation_decay: 0.9,
+            ..NodeParams::default()
         });
         builder.add_connection(ConnectionParams::new(
             input, output, 1.0, 1.5, 0, 1.0, 1.0, 5.0, 5.0,

@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use core_graph::{ConnectionParams, GraphBuilder, Network, NodeParams, NodeType};
+use core_graph::{
+    ConnectionParams, EpisodeResetPolicy, GraphBuilder, Network, NodeParams, NodeType,
+};
 use model_dec::BinaryDecoder;
 use model_enc::TableEncoder;
 
@@ -18,6 +20,9 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.0,
         0.1,
         0.0,
+        10.0,
+        None,
+        EpisodeResetPolicy::None,
     ));
     let input_b = builder.add_input_node(NodeParams::new(
         NodeType::Excitatory,
@@ -28,6 +33,9 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.0,
         0.1,
         0.0,
+        10.0,
+        None,
+        EpisodeResetPolicy::None,
     ));
     let xor_node = builder.add_node(NodeParams::new(
         NodeType::Excitatory,
@@ -38,6 +46,9 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.0,
         0.05,
         0.0,
+        10.0,
+        None,
+        EpisodeResetPolicy::None,
     ));
     let gating_node = builder.add_node(NodeParams::new(
         NodeType::Modulatory,
@@ -48,6 +59,9 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.0,
         0.05,
         0.0,
+        10.0,
+        None,
+        EpisodeResetPolicy::None,
     ));
 
     builder.add_connection(ConnectionParams::new(
