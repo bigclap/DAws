@@ -11,7 +11,6 @@
 ## Retriever and Memory
 
 ## Training and Adaptation
-- Add online plasticity routines that apply reward-modulated updates every `K` steps, prune/grow every `M` steps, and log eligibility traces for debugging.
 
 ## Evaluation and Profiling
 - Create the synthetic evaluation bench covering XOR, analogies, stack/parentheses tasks, and long-context retrieval episodes with reporting on accuracy and cosine thresholds.
