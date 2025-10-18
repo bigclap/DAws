@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bytemuck = "1.14"
+hnsw_rs = "0.3.2"
 parquet = "49.0.0"
 safetensors = "0.4"
 thiserror = "1.0"

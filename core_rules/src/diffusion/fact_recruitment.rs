@@ -1,48 +1,54 @@
-use std::cmp::Ordering;
+use std::fmt;
 
-use retriever::Retriever;
+use retriever::{MemoryRecord, Retriever, RetrieverError};
 
-use super::cosine_similarity;
-
-#[derive(Clone, Debug)]
 pub struct FactRecruitment {
     retriever: Retriever,
-    facts: Vec<Vec<f32>>,
     strength: f32,
     temperature: f32,
 }
 
 impl FactRecruitment {
     pub fn new(
-        retriever: Retriever,
+        mut retriever: Retriever,
         facts: Vec<Vec<f32>>,
         strength: f32,
         temperature: f32,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, RetrieverError> {
+        if !facts.is_empty() {
+            let records = facts
+                .into_iter()
+                .enumerate()
+                .map(|(idx, fact)| MemoryRecord::new(idx as u64, fact.clone(), fact));
+            retriever.ingest(records)?;
+        }
+        Ok(Self {
             retriever,
-            facts,
             strength: strength.max(0.0),
             temperature: temperature.max(1e-3),
-        }
+        })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.facts.is_empty()
+        self.retriever.is_empty()
     }
 
     pub fn recruit(&self, query: &[f32]) -> Option<Vec<f32>> {
         if self.is_empty() || query.is_empty() {
             return None;
         }
+        let hits = self.retriever.search(query, None).ok()?;
+        if hits.is_empty() {
+            return None;
+        }
         let mut blended = vec![0.0; query.len()];
         let mut weight_sum = 0.0f32;
-        for (idx, similarity) in self.approximate_candidates(query) {
-            let fact = self.facts.get(idx)?;
+        for hit in hits {
+            let fact = self.retriever.value(hit.key)?;
             if fact.len() != query.len() {
                 continue;
             }
-            let weight = ((similarity + 1.0) * 0.5)
+            let weight = ((hit.similarity + 1.0) * 0.5)
                 .clamp(0.0, 1.0)
                 .powf(1.0 / self.temperature);
             if weight <= 0.0 {
@@ -61,47 +67,30 @@ impl FactRecruitment {
         }
         Some(blended)
     }
+}
 
-    fn approximate_candidates(&self, query: &[f32]) -> Vec<(usize, f32)> {
-        let total = self.facts.len();
-        if total == 0 {
-            return Vec::new();
+impl Clone for FactRecruitment {
+    fn clone(&self) -> Self {
+        let snapshot = self
+            .retriever
+            .snapshot()
+            .expect("retriever snapshot for clone");
+        let retriever = Retriever::from_snapshot(self.retriever.config().clone(), snapshot)
+            .expect("retriever clone");
+        Self {
+            retriever,
+            strength: self.strength,
+            temperature: self.temperature,
         }
-        let top_k = self.retriever.top_k().max(1);
-        let step = (total / (top_k * 2)).max(1);
-        let mut scored: Vec<_> = (0..total)
-            .step_by(step)
-            .filter_map(|idx| {
-                let fact = self.facts.get(idx)?;
-                (fact.len() == query.len()).then(|| (idx, cosine_similarity(query, fact)))
-            })
-            .collect();
-        if scored.is_empty() {
-            return scored;
-        }
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
-        scored.truncate(top_k);
-        if step == 1 {
-            return scored;
-        }
-        let mut refined = scored.clone();
-        let window = step.min(4);
-        for &(center, _) in &scored {
-            let start = center.saturating_sub(window);
-            let end = (center + window).min(total - 1);
-            for idx in start..=end {
-                if refined.iter().any(|(seen, _)| *seen == idx) {
-                    continue;
-                }
-                if let Some(fact) = self.facts.get(idx) {
-                    if fact.len() == query.len() {
-                        refined.push((idx, cosine_similarity(query, fact)));
-                    }
-                }
-            }
-        }
-        refined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
-        refined.truncate(top_k);
-        refined
+    }
+}
+
+impl fmt::Debug for FactRecruitment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FactRecruitment")
+            .field("entries", &self.retriever.len())
+            .field("strength", &self.strength)
+            .field("temperature", &self.temperature)
+            .finish()
     }
 }

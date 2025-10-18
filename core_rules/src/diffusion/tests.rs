@@ -49,12 +49,20 @@ fn diffusion_applies_entropy_scaled_gain() {
 
 #[test]
 fn fact_recruitment_selects_high_affinity_fact() {
-    let recruitment = FactRecruitment::new(
-        Retriever::new(RetrieverConfig { top_k: 1 }),
-        vec![vec![1.0, 0.0], vec![0.0, 1.0]],
-        0.6,
-        0.5,
-    );
+    let config = RetrieverConfig {
+        dimension: 2,
+        value_dimension: 2,
+        max_elements: 8,
+        max_layers: 4,
+        max_connections: 4,
+        ef_construction: 16,
+        ef_search: 8,
+        top_k: 1,
+    };
+    let retriever = Retriever::new(config).expect("valid retriever");
+    let recruitment =
+        FactRecruitment::new(retriever, vec![vec![1.0, 0.0], vec![0.0, 1.0]], 0.6, 0.5)
+            .expect("facts ingested");
     let contribution = recruitment.recruit(&[1.0, 0.0]).expect("fact retrieved");
     assert!((contribution[0] - 0.6).abs() < 1e-6);
     assert!(contribution[1] <= 1e-6);
