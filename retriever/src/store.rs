@@ -215,6 +215,7 @@ impl Retriever {
             keys,
             vectors,
             values,
+            self.gates.clone(),
             self.records.len(),
             self.config.dimension,
             self.config.value_dimension,
@@ -242,6 +243,11 @@ impl Retriever {
             })
             .collect::<Vec<_>>();
         retriever.ingest(records)?;
+        if snapshot.gates.len() == retriever.gates.len() {
+            for (gate, stored) in retriever.gates.iter_mut().zip(snapshot.gates.iter()) {
+                *gate = stored.clamp(retriever.config.gate_floor, retriever.config.gate_ceiling);
+            }
+        }
         Ok(retriever)
     }
 

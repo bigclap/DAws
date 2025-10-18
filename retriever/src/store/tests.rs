@@ -57,6 +57,36 @@ fn snapshot_round_trip_preserves_results() {
 }
 
 #[test]
+fn snapshot_restores_gate_state() {
+    let mut config = base_config();
+    config.gate_decay = 0.5;
+    config.gate_refresh = 1.0;
+    config.gate_floor = 0.1;
+    config.gate_ceiling = 1.0;
+    let mut retriever = Retriever::new(config.clone()).expect("valid config");
+    retriever
+        .ingest([record(1, [1.0, 0.0]), record(2, [0.0, 1.0])])
+        .expect("ingest succeeds");
+
+    retriever
+        .search(&[1.0, 0.0], Some(1))
+        .expect("query executes");
+
+    let gate_one = retriever.gate(1).expect("gate available");
+    let gate_two = retriever.gate(2).expect("gate available");
+    assert!((gate_one - 1.0).abs() < 1e-6);
+    assert!((gate_two - 0.5).abs() < 1e-6);
+
+    let snapshot = retriever.snapshot().expect("snapshot");
+    let restored = Retriever::from_snapshot(config, snapshot).expect("restored");
+
+    let restored_gate_one = restored.gate(1).expect("gate available");
+    let restored_gate_two = restored.gate(2).expect("gate available");
+    assert!((restored_gate_one - gate_one).abs() < 1e-6);
+    assert!((restored_gate_two - gate_two).abs() < 1e-6);
+}
+
+#[test]
 fn refresh_pulses_decay_and_boost_gates() {
     let mut config = base_config();
     config.gate_decay = 0.9;

@@ -58,6 +58,42 @@ pub fn read_f32_matrix(
     Ok((data, rows, dims))
 }
 
+pub fn write_f32_vector(
+    path: PathBuf,
+    name: &str,
+    data: &[f32],
+) -> Result<(), MemorySnapshotError> {
+    let tensor = TensorView::new(safetensors::Dtype::F32, vec![data.len()], cast_slice(data))?;
+    let bytes = serialize(std::iter::once((name.to_string(), tensor)), &None)?;
+    std::fs::File::create(path)?.write_all(&bytes)?;
+    Ok(())
+}
+
+pub fn read_f32_vector(
+    path: PathBuf,
+    name: &str,
+) -> Result<(Vec<f32>, usize), MemorySnapshotError> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.read_to_end(&mut bytes)?;
+    let tensors = SafeTensors::deserialize(&bytes)?;
+    let tensor = tensors.tensor(name)?;
+    if tensor.dtype() != safetensors::Dtype::F32 {
+        return Err(MemorySnapshotError::UnsupportedDType {
+            dtype: tensor.dtype(),
+        });
+    }
+    let shape = tensor.shape();
+    if shape.len() != 1 {
+        return Err(MemorySnapshotError::InvalidShape {
+            expected: 1,
+            found: shape.len(),
+        });
+    }
+    let len = shape[0];
+    let data = cast_slice::<u8, f32>(tensor.data()).to_vec();
+    Ok((data, len))
+}
+
 pub fn write_keys(path: PathBuf, name: &str, keys: &[u64]) -> Result<(), MemorySnapshotError> {
     let casted: Vec<i64> = keys
         .iter()
