@@ -11,7 +11,6 @@
 ## Retriever and Memory
 
 ## Training and Adaptation
-- Author the offline decoder trainer with mmap dataset loader, AdamW schedule (warmup + cosine), optional mixed precision, and validation metrics (cosine@median, retrieval rank@k, distinct-n, ppl surrogate).
 - Add online plasticity routines that apply reward-modulated updates every `K` steps, prune/grow every `M` steps, and log eligibility traces for debugging.
 
 ## Evaluation and Profiling

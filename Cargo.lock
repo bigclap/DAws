@@ -3033,6 +3033,13 @@ dependencies = [
 [[package]]
 name = "trainer"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "memmap2",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "twox-hash"
