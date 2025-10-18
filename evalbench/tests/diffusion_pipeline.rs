@@ -1,5 +1,6 @@
-use core_graph::Network;
+use core_graph::{Network, NetworkProfiler, ProfilerConfig};
 use core_rules::diffusion::{DiffusionConfig, DiffusionLoop};
+use core_rules::scheduler::{ReasoningScheduler, SchedulerConfig};
 use evalbench::build_xor_network;
 use model_dec::BinaryDecoder;
 use model_enc::TableEncoder;
@@ -11,6 +12,8 @@ type XorPipeline = (
     BinaryDecoder,
     usize,
     DiffusionLoop,
+    ReasoningScheduler,
+    ProfilerConfig,
 );
 
 #[fixture]
@@ -22,7 +25,19 @@ fn xor_pipeline() -> XorPipeline {
         max_iters: 10,
         noise: 0.0,
     });
-    (network, encoder, decoder, output_node, diffusion)
+    let scheduler = ReasoningScheduler::new(SchedulerConfig { settle_steps: 3 });
+    let profiler_cfg = ProfilerConfig {
+        activation_threshold: 0.2,
+    };
+    (
+        network,
+        encoder,
+        decoder,
+        output_node,
+        diffusion,
+        scheduler,
+        profiler_cfg,
+    )
 }
 
 #[rstest]
@@ -35,20 +50,20 @@ fn xor_reasoning_pipeline_produces_expected_outputs(
     #[case] expected: &str,
     #[from(xor_pipeline)] ctx: XorPipeline,
 ) {
-    let (mut network, encoder, decoder, output_node, mut diffusion) = ctx;
+    let (mut network, encoder, decoder, output_node, mut diffusion, scheduler, profiler_cfg) = ctx;
     let embedding = encoder.encode(input);
-    network.reset_state();
-    network.inject_embedding(&embedding);
-    let _ = network.step(0);
-    let _ = network.step(1);
-    let _ = network.step(2);
-
-    let state = diffusion.run(&mut network).state;
-    let output = decoder.decode(state[output_node]);
+    let mut profiler = NetworkProfiler::new(profiler_cfg);
+    let outcome = scheduler.run_case(
+        &mut network,
+        &embedding,
+        &mut diffusion,
+        Some(&mut profiler),
+    );
+    let output = decoder.decode(outcome.state[output_node].clamp(0.0, 1.0));
     assert_eq!(output, expected, "failed for input {input}");
 
-    let active_ratio = network.active_ratio(0.2);
-    assert!(active_ratio <= 0.6, "active ratio {active_ratio}");
-    assert!(diffusion.last_iterations() <= 10);
-    assert!(diffusion.last_similarity() > 0.95);
+    let summary = profiler.summary();
+    assert!(summary.average_active_ratio <= 0.6);
+    assert!(outcome.iterations <= 10);
+    assert!(outcome.similarity > 0.95);
 }

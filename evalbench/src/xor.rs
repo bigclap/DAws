@@ -2,15 +2,14 @@
 
 use std::collections::HashMap;
 
-use core_graph::{Connection, Network, Node, NodeType};
+use core_graph::{ConnectionParams, GraphBuilder, Network, NodeParams, NodeType};
 use model_dec::BinaryDecoder;
 use model_enc::TableEncoder;
 
 /// Builds a compact XOR reasoning graph used by integration tests and the CLI.
 pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
-    let mut nodes = Vec::new();
-    nodes.push(Node::new(
-        0,
+    let mut builder = GraphBuilder::new();
+    let input_a = builder.add_input_node(NodeParams::new(
         NodeType::Excitatory,
         0.4,
         0.95,
@@ -20,8 +19,7 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.1,
         0.0,
     ));
-    nodes.push(Node::new(
-        1,
+    let input_b = builder.add_input_node(NodeParams::new(
         NodeType::Excitatory,
         0.4,
         0.95,
@@ -31,8 +29,7 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.1,
         0.0,
     ));
-    nodes.push(Node::new(
-        2,
+    let xor_node = builder.add_node(NodeParams::new(
         NodeType::Excitatory,
         0.7,
         0.98,
@@ -42,8 +39,7 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.05,
         0.0,
     ));
-    nodes.push(Node::new(
-        3,
+    let gating_node = builder.add_node(NodeParams::new(
         NodeType::Modulatory,
         1.1,
         0.98,
@@ -54,15 +50,47 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
         0.0,
     ));
 
-    let mut connections = Vec::new();
-    connections.push(Connection::new(0, 2, 1.0, 3.0, 0, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(1, 2, 1.0, 3.0, 0, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(0, 3, 0.7, 2.0, 0, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(1, 3, 0.7, 2.0, 0, 1.0, 1.0, 5.0, 5.0));
-    connections.push(Connection::new(3, 2, 2.5, 3.0, 0, 1.0, 1.0, 5.0, 5.0));
+    builder.add_connection(ConnectionParams::new(
+        input_a, xor_node, 1.0, 3.0, 0, 1.0, 1.0, 5.0, 5.0,
+    ));
+    builder.add_connection(ConnectionParams::new(
+        input_b, xor_node, 1.0, 3.0, 0, 1.0, 1.0, 5.0, 5.0,
+    ));
+    builder.add_connection(ConnectionParams::new(
+        input_a,
+        gating_node,
+        0.7,
+        2.0,
+        0,
+        1.0,
+        1.0,
+        5.0,
+        5.0,
+    ));
+    builder.add_connection(ConnectionParams::new(
+        input_b,
+        gating_node,
+        0.7,
+        2.0,
+        0,
+        1.0,
+        1.0,
+        5.0,
+        5.0,
+    ));
+    builder.add_connection(ConnectionParams::new(
+        gating_node,
+        xor_node,
+        2.5,
+        3.0,
+        0,
+        1.0,
+        1.0,
+        5.0,
+        5.0,
+    ));
 
-    let input_nodes = vec![0, 1];
-    let network = Network::new(nodes, connections, input_nodes);
+    let network = builder.build().expect("xor network assembly");
 
     let mut table = HashMap::new();
     table.insert("0 0".to_string(), vec![0.0, 0.0]);
@@ -71,5 +99,5 @@ pub fn build_xor_network() -> (Network, TableEncoder, BinaryDecoder, usize) {
     table.insert("1 1".to_string(), vec![1.0, 1.0]);
     let encoder = TableEncoder::new(table);
     let decoder = BinaryDecoder::new(0.5);
-    (network, encoder, decoder, 2)
+    (network, encoder, decoder, xor_node)
 }

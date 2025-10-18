@@ -1,5 +1,11 @@
 //! Event-driven spiking network core with local plasticity helpers.
 
+pub mod assembly;
+pub mod profiling;
+
+pub use assembly::{AssemblyError, ConnectionParams, GraphBuilder, NodeParams};
+pub use profiling::{NetworkProfiler, ProfileSummary, ProfilerConfig, StepObserver, StepSnapshot};
+
 /// Maximum discrete synaptic delay supported by the simulator.
 pub const MAX_DELAY: usize = 16;
 /// Alpha-kernel coefficients applied when delivering excitation.
@@ -543,7 +549,7 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::{Connection, Network, Node, NodeType, ALPHA_KERNEL};
+    use super::{ALPHA_KERNEL, Connection, Network, Node, NodeType};
 
     #[test]
     fn inhibitory_spikes_apply_divisive_normalization() {
