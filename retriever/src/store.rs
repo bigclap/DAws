@@ -42,6 +42,7 @@ pub struct Retriever {
     index: Hnsw<'static, f32, DistCosine>,
     records: Vec<MemoryRecord>,
     offsets: HashMap<u64, usize>,
+    gates: Vec<f32>,
 }
 
 impl Retriever {
@@ -60,6 +61,7 @@ impl Retriever {
             index,
             records: Vec::new(),
             offsets: HashMap::new(),
+            gates: Vec::new(),
         })
     }
 
@@ -125,13 +127,14 @@ impl Retriever {
             self.index.insert((&record.embedding, data_id));
             self.offsets.insert(record.key, data_id);
             self.records.push(record);
+            self.gates.push(self.initial_gate());
         }
         Ok(())
     }
 
     /// Executes a cosine-similarity ANN search over the stored embeddings.
     pub fn search(
-        &self,
+        &mut self,
         query: &[f32],
         limit: Option<usize>,
     ) -> Result<Vec<MemoryHit>, RetrieverError> {
@@ -142,8 +145,10 @@ impl Retriever {
             });
         }
         if self.records.is_empty() {
+            self.decay_gates();
             return Ok(Vec::new());
         }
+        self.decay_gates();
         let normalized_query = normalize(query, None)?;
         let limit = limit
             .unwrap_or_else(|| self.top_k())
@@ -154,9 +159,18 @@ impl Retriever {
             .search(&normalized_query, limit, ef)
             .into_iter()
             .filter_map(|neighbor| {
-                self.records.get(neighbor.d_id).map(|record| MemoryHit {
+                let record = self.records.get(neighbor.d_id)?;
+                let gate = self
+                    .gates
+                    .get(neighbor.d_id)
+                    .copied()
+                    .unwrap_or(self.config.gate_floor);
+                let similarity =
+                    cosine(&normalized_query, &record.embedding) * gate.clamp(0.0, f32::MAX);
+                Some(MemoryHit {
                     key: record.key,
-                    similarity: cosine(&normalized_query, &record.embedding),
+                    similarity,
+                    gate,
                 })
             })
             .collect::<Vec<_>>();
@@ -166,6 +180,7 @@ impl Retriever {
                 .unwrap_or(Ordering::Equal)
         });
         results.truncate(limit);
+        self.refresh_hits(&results);
         Ok(results)
     }
 
@@ -175,6 +190,14 @@ impl Retriever {
             .get(&key)
             .and_then(|&idx| self.records.get(idx))
             .map(|record| record.value.as_slice())
+    }
+
+    /// Returns the current gate value for the supplied key, if present.
+    pub fn gate(&self, key: u64) -> Option<f32> {
+        self.offsets
+            .get(&key)
+            .and_then(|&idx| self.gates.get(idx))
+            .copied()
     }
 
     /// Creates a serialisable snapshot of the retriever state.
@@ -221,6 +244,60 @@ impl Retriever {
         retriever.ingest(records)?;
         Ok(retriever)
     }
+
+    /// Applies a refresh pulse to the supplied memory keys.
+    pub fn refresh_pulse(&mut self, keys: &[u64]) {
+        if self.records.is_empty() {
+            return;
+        }
+        self.decay_gates();
+        let refresh = self.refresh_gate_value();
+        for key in keys {
+            if let Some(&idx) = self.offsets.get(key) {
+                if let Some(gate) = self.gates.get_mut(idx) {
+                    *gate = refresh;
+                }
+            }
+        }
+    }
+
+    fn refresh_hits(&mut self, hits: &[MemoryHit]) {
+        if hits.is_empty() {
+            return;
+        }
+        let refresh = self.refresh_gate_value();
+        for hit in hits {
+            if let Some(&idx) = self.offsets.get(&hit.key) {
+                if let Some(gate) = self.gates.get_mut(idx) {
+                    *gate = refresh;
+                }
+            }
+        }
+    }
+
+    fn decay_gates(&mut self) {
+        if self.gates.is_empty() {
+            return;
+        }
+        let decay = self.config.gate_decay.clamp(0.0, 1.0);
+        let floor = self.config.gate_floor;
+        for gate in &mut self.gates {
+            *gate = (*gate * decay).max(floor);
+            if *gate > self.config.gate_ceiling {
+                *gate = self.config.gate_ceiling;
+            }
+        }
+    }
+
+    fn refresh_gate_value(&self) -> f32 {
+        self.config
+            .gate_refresh
+            .clamp(self.config.gate_floor, self.config.gate_ceiling)
+    }
+
+    fn initial_gate(&self) -> f32 {
+        self.refresh_gate_value()
+    }
 }
 
 fn validate_config(config: &RetrieverConfig) -> Result<(), RetrieverError> {
@@ -247,6 +324,21 @@ fn validate_config(config: &RetrieverConfig) -> Result<(), RetrieverError> {
     if config.ef_search == 0 {
         return Err(RetrieverError::InvalidConfiguration(
             "ef_search must be greater than zero",
+        ));
+    }
+    if !(0.0..=1.0).contains(&config.gate_decay) {
+        return Err(RetrieverError::InvalidConfiguration(
+            "gate_decay must be within [0, 1]",
+        ));
+    }
+    if config.gate_ceiling < config.gate_floor {
+        return Err(RetrieverError::InvalidConfiguration(
+            "gate_ceiling must be greater than or equal to gate_floor",
+        ));
+    }
+    if config.gate_refresh < config.gate_floor || config.gate_refresh > config.gate_ceiling {
+        return Err(RetrieverError::InvalidConfiguration(
+            "gate_refresh must lie within [gate_floor, gate_ceiling]",
         ));
     }
     Ok(())

@@ -9,7 +9,6 @@
 ## Encoder/Decoder (E/E′)
 
 ## Retriever and Memory
-- Integrate memory refresh pulses (Mem self-loops + gate refresh) that support long-context retention targets.
 
 ## Training and Adaptation
 - Author the offline decoder trainer with mmap dataset loader, AdamW schedule (warmup + cosine), optional mixed precision, and validation metrics (cosine@median, retrieval rank@k, distinct-n, ppl surrogate).

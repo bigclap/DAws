@@ -58,9 +58,13 @@ fn fact_recruitment_selects_high_affinity_fact() {
         ef_construction: 16,
         ef_search: 8,
         top_k: 1,
+        gate_decay: 1.0,
+        gate_floor: 0.0,
+        gate_ceiling: 1.0,
+        gate_refresh: 1.0,
     };
     let retriever = Retriever::new(config).expect("valid retriever");
-    let recruitment =
+    let mut recruitment =
         FactRecruitment::new(retriever, vec![vec![1.0, 0.0], vec![0.0, 1.0]], 0.6, 0.5)
             .expect("facts ingested");
     let contribution = recruitment.recruit(&[1.0, 0.0]).expect("fact retrieved");

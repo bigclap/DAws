@@ -19,6 +19,14 @@ pub struct RetrieverConfig {
     pub ef_search: usize,
     /// Default number of neighbours returned when querying.
     pub top_k: usize,
+    /// Multiplicative decay applied to memory gates when refreshing.
+    pub gate_decay: f32,
+    /// Minimum gate value permitted after decay.
+    pub gate_floor: f32,
+    /// Upper bound enforced on gate values.
+    pub gate_ceiling: f32,
+    /// Target gate value assigned when a memory receives a refresh pulse.
+    pub gate_refresh: f32,
 }
 
 impl Default for RetrieverConfig {
@@ -32,6 +40,10 @@ impl Default for RetrieverConfig {
             ef_construction: 200,
             ef_search: 50,
             top_k: 8,
+            gate_decay: 1.0,
+            gate_floor: 0.0,
+            gate_ceiling: 1.0,
+            gate_refresh: 1.0,
         }
     }
 }
@@ -65,10 +77,16 @@ pub struct MemoryHit {
     pub key: u64,
     /// Cosine similarity between query and stored embedding.
     pub similarity: f32,
+    /// Gate value applied during retrieval reflecting retention state.
+    pub gate: f32,
 }
 
 impl fmt::Display for MemoryHit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({:.4})", self.key, self.similarity)
+        write!(
+            f,
+            "{} ({:.4} @ {:.3})",
+            self.key, self.similarity, self.gate
+        )
     }
 }

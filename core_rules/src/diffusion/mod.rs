@@ -133,7 +133,7 @@ impl DiffusionLoop {
             let injection_vec = self
                 .config
                 .fact_recruitment
-                .as_ref()
+                .as_mut()
                 .and_then(|recruiter| recruiter.recruit(&current));
             let injection = injection_vec.as_ref().filter(|vec| !vec.is_empty());
             let mut next = Vec::with_capacity(consensus.len());

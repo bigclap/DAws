@@ -10,6 +10,10 @@ fn base_config() -> RetrieverConfig {
         ef_construction: 16,
         ef_search: 16,
         top_k: 3,
+        gate_decay: 1.0,
+        gate_floor: 0.0,
+        gate_ceiling: 1.0,
+        gate_refresh: 1.0,
     }
 }
 
@@ -45,9 +49,47 @@ fn snapshot_round_trip_preserves_results() {
         .expect("ingest succeeds");
     let snapshot = retriever.snapshot().expect("snapshot");
 
-    let restored = Retriever::from_snapshot(base_config(), snapshot).expect("restored");
+    let mut restored = Retriever::from_snapshot(base_config(), snapshot).expect("restored");
     let hits = restored.search(&[0.0, 1.0], None).expect("query executes");
     assert_eq!(hits.first().map(|hit| hit.key), Some(8));
     let value = restored.value(8).expect("payload available");
     assert!((value[1] - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn refresh_pulses_decay_and_boost_gates() {
+    let mut config = base_config();
+    config.gate_decay = 0.9;
+    config.gate_floor = 0.1;
+    config.gate_ceiling = 1.0;
+    config.gate_refresh = 0.95;
+    let mut retriever = Retriever::new(config).expect("valid config");
+    retriever
+        .ingest([record(1, [1.0, 0.0]), record(2, [0.0, 1.0])])
+        .expect("ingest succeeds");
+
+    assert!((retriever.gate(1).unwrap() - 0.95).abs() < 1e-6);
+    assert!((retriever.gate(2).unwrap() - 0.95).abs() < 1e-6);
+
+    let hits = retriever
+        .search(&[1.0, 0.0], Some(1))
+        .expect("query executes");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].key, 1);
+    assert!((hits[0].gate - 0.855).abs() < 1e-6);
+    assert!((retriever.gate(1).unwrap() - 0.95).abs() < 1e-6);
+    assert!((retriever.gate(2).unwrap() - 0.855).abs() < 1e-6);
+
+    retriever.refresh_pulse(&[]);
+    retriever.refresh_pulse(&[]);
+    let degraded_gate = retriever.gate(2).unwrap();
+    assert!(degraded_gate < 0.8);
+
+    let hits = retriever
+        .search(&[0.0, 1.0], Some(1))
+        .expect("query executes");
+    assert_eq!(hits[0].key, 2);
+    assert!(hits[0].gate < degraded_gate);
+    assert!(retriever.gate(2).unwrap() > 0.9);
+    assert!(retriever.gate(1).unwrap() < 0.8);
 }
