@@ -9,7 +9,6 @@
 ## Encoder/Decoder (E/E′)
 
 ## Retriever and Memory
-- Implement the ANN/HNSW retriever crate with KV-memory persistence and recruitment APIs used by the diffusion heuristics.
 - Integrate memory refresh pulses (Mem self-loops + gate refresh) that support long-context retention targets.
 
 ## Training and Adaptation
