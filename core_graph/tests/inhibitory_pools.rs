@@ -11,6 +11,7 @@ fn excitatory_params(threshold: f32) -> NodeParams {
         divisive_beta: 0.0,
         kappa: 0.0,
         modulation_decay: 1.0,
+        ..NodeParams::default()
     }
 }
 

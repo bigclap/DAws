@@ -82,6 +82,17 @@ pub enum NodeType {
     Memory,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Policy applied when an episode boundary is reached.
+pub enum EpisodeResetPolicy {
+    /// No reset is performed when the boundary is reached.
+    None,
+    /// Clears fast-varying state while keeping adaptation and eligibility.
+    Soft,
+    /// Restores the node to its initial state.
+    Hard,
+}
+
 #[derive(Clone, Debug)]
 /// Spiking unit with alpha-kernel synaptic integration and divisive normalisation.
 pub struct Node {
@@ -104,6 +115,10 @@ pub struct Node {
     pub future_exc: [f32; MAX_DELAY],
     pub accum_exc: f32,
     pub accum_inh: f32,
+    pub energy_cap: f32,
+    pub episode_period: Option<usize>,
+    pub episode_phase: usize,
+    pub reset_policy: EpisodeResetPolicy,
 }
 
 impl Node {
@@ -119,6 +134,9 @@ impl Node {
         divisive_beta: f32,
         kappa: f32,
         modulation_decay: f32,
+        energy_cap: f32,
+        episode_period: Option<usize>,
+        reset_policy: EpisodeResetPolicy,
     ) -> Self {
         Self {
             id,
@@ -140,6 +158,10 @@ impl Node {
             future_exc: [0.0; MAX_DELAY],
             accum_exc: 0.0,
             accum_inh: 0.0,
+            energy_cap: energy_cap.max(f32::EPSILON),
+            episode_period,
+            episode_phase: 0,
+            reset_policy,
         }
     }
 
@@ -151,6 +173,8 @@ impl Node {
 
     /// Integrates accumulated excitation and inhibition for one time step.
     pub fn step_integrate(&mut self) {
+        self.advance_episode();
+
         let incoming_exc = self.future_exc[0];
         self.future_exc.rotate_left(1);
         self.future_exc[MAX_DELAY - 1] = 0.0;
@@ -170,6 +194,8 @@ impl Node {
         self.inhibition_accumulator = inhibition;
         self.accum_exc = 0.0;
         self.accum_inh = 0.0;
+
+        self.enforce_stability();
     }
 
     /// Applies spike side-effects such as resetting potential and recording time.
@@ -182,6 +208,7 @@ impl Node {
             let scaled = ((1.0 + self.modulation).clamp(0.1, 10.0)) * 0.9;
             self.modulation = (scaled - 1.0).clamp(-0.9, 9.0);
         }
+        self.enforce_stability();
     }
 
     /// Clears transient state, restoring the node to its initial conditions.
@@ -196,6 +223,85 @@ impl Node {
         self.future_exc = [0.0; MAX_DELAY];
         self.accum_exc = 0.0;
         self.accum_inh = 0.0;
+        self.episode_phase = 0;
+        self.enforce_stability();
+    }
+
+    fn advance_episode(&mut self) {
+        if let Some(period) = self.episode_period {
+            if period == 0 {
+                return;
+            }
+            self.episode_phase = self.episode_phase.saturating_add(1);
+            if self.episode_phase >= period {
+                match self.reset_policy {
+                    EpisodeResetPolicy::None => {}
+                    EpisodeResetPolicy::Soft => self.soft_reset(),
+                    EpisodeResetPolicy::Hard => self.reset_state(),
+                }
+                if !matches!(self.reset_policy, EpisodeResetPolicy::Hard) {
+                    self.episode_phase = 0;
+                }
+            }
+        }
+    }
+
+    fn soft_reset(&mut self) {
+        self.potential = 0.0;
+        self.activation = 0.0;
+        self.modulation = 0.0;
+        self.last_spike_step = None;
+        self.inhibition_accumulator = 0.0;
+        self.future_exc = [0.0; MAX_DELAY];
+        self.accum_exc = 0.0;
+        self.accum_inh = 0.0;
+        self.eligibility = self.eligibility.clamp(-self.energy_cap, self.energy_cap);
+        self.episode_phase = 0;
+        self.enforce_stability();
+    }
+
+    fn enforce_stability(&mut self) {
+        if !self.potential.is_finite() {
+            self.potential = 0.0;
+        }
+        if !self.activation.is_finite() {
+            self.activation = 0.0;
+        }
+        if !self.adaptation.is_finite() {
+            self.adaptation = 0.0;
+        }
+        if !self.modulation.is_finite() {
+            self.modulation = 0.0;
+        }
+        if !self.eligibility.is_finite() {
+            self.eligibility = 0.0;
+        }
+        if !self.inhibition_accumulator.is_finite() {
+            self.inhibition_accumulator = 0.0;
+        }
+        if !self.accum_exc.is_finite() {
+            self.accum_exc = 0.0;
+        }
+        if !self.accum_inh.is_finite() {
+            self.accum_inh = 0.0;
+        }
+
+        let cap = self.energy_cap.max(f32::EPSILON);
+        self.potential = self.potential.clamp(-cap, cap);
+        self.activation = self.activation.clamp(0.0, cap);
+        self.adaptation = self.adaptation.clamp(-cap, cap);
+        self.modulation = self.modulation.clamp(-cap, cap);
+        self.eligibility = self.eligibility.clamp(-cap, cap);
+        self.inhibition_accumulator = self.inhibition_accumulator.clamp(0.0, cap);
+        self.accum_exc = self.accum_exc.clamp(-cap, cap);
+        self.accum_inh = self.accum_inh.clamp(-cap, cap);
+
+        for slot in &mut self.future_exc {
+            if !slot.is_finite() {
+                *slot = 0.0;
+            }
+            *slot = slot.clamp(-cap, cap);
+        }
     }
 }
 
@@ -764,12 +870,38 @@ fn accumulate_coactivation(conn: &mut Connection, dt: f32) {
 }
 
 pub mod test_helpers {
-    use super::{Connection, Network, Node, NodeType};
+    use super::{Connection, EpisodeResetPolicy, Network, Node, NodeType};
 
     pub fn two_node_modulatory() -> Network {
         let nodes = vec![
-            Node::new(0, NodeType::Modulatory, 0.5, 0.99, 0.9, 0.9, 0.0, 0.05, 0.0),
-            Node::new(1, NodeType::Excitatory, 0.6, 0.99, 0.9, 0.9, 0.0, 0.05, 0.0),
+            Node::new(
+                0,
+                NodeType::Modulatory,
+                0.5,
+                0.99,
+                0.9,
+                0.9,
+                0.0,
+                0.05,
+                0.0,
+                10.0,
+                None,
+                EpisodeResetPolicy::None,
+            ),
+            Node::new(
+                1,
+                NodeType::Excitatory,
+                0.6,
+                0.99,
+                0.9,
+                0.9,
+                0.0,
+                0.05,
+                0.0,
+                10.0,
+                None,
+                EpisodeResetPolicy::None,
+            ),
         ];
         let connections = vec![Connection::new(0, 1, 1.0, 2.0, 0, 1.0, 1.0, 5.0, 5.0)];
         Network::new(nodes, connections, vec![0])
@@ -777,8 +909,34 @@ pub mod test_helpers {
 
     pub fn simple_pair() -> Network {
         let nodes = vec![
-            Node::new(0, NodeType::Excitatory, 0.3, 0.99, 0.9, 0.9, 0.0, 0.05, 0.0),
-            Node::new(1, NodeType::Excitatory, 0.5, 0.99, 0.9, 0.9, 0.0, 0.05, 0.0),
+            Node::new(
+                0,
+                NodeType::Excitatory,
+                0.3,
+                0.99,
+                0.9,
+                0.9,
+                0.0,
+                0.05,
+                0.0,
+                10.0,
+                None,
+                EpisodeResetPolicy::None,
+            ),
+            Node::new(
+                1,
+                NodeType::Excitatory,
+                0.5,
+                0.99,
+                0.9,
+                0.9,
+                0.0,
+                0.05,
+                0.0,
+                10.0,
+                None,
+                EpisodeResetPolicy::None,
+            ),
         ];
         let connections = vec![Connection::new(0, 1, 0.8, 2.0, 0, 1.0, 1.0, 5.0, 5.0)];
         Network::new(nodes, connections, vec![0])
@@ -788,7 +946,8 @@ pub mod test_helpers {
 #[cfg(test)]
 mod tests {
     use super::{
-        ALPHA_KERNEL, Connection, Network, Node, NodeType, StructuralPlasticityConfig, test_helpers,
+        ALPHA_KERNEL, Connection, EpisodeResetPolicy, Network, Node, NodeType,
+        StructuralPlasticityConfig, test_helpers,
     };
 
     fn plasticity_config_for_tests() -> StructuralPlasticityConfig {
@@ -815,9 +974,48 @@ mod tests {
     #[test]
     fn inhibitory_spikes_apply_divisive_normalization() {
         let nodes = vec![
-            Node::new(0, NodeType::Excitatory, 0.3, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0),
-            Node::new(1, NodeType::Inhibitory, 0.3, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0),
-            Node::new(2, NodeType::Excitatory, 2.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.0),
+            Node::new(
+                0,
+                NodeType::Excitatory,
+                0.3,
+                1.0,
+                1.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                None,
+                EpisodeResetPolicy::None,
+            ),
+            Node::new(
+                1,
+                NodeType::Inhibitory,
+                0.3,
+                1.0,
+                1.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                None,
+                EpisodeResetPolicy::None,
+            ),
+            Node::new(
+                2,
+                NodeType::Excitatory,
+                2.0,
+                1.0,
+                1.0,
+                1.0,
+                0.5,
+                0.0,
+                0.0,
+                10.0,
+                None,
+                EpisodeResetPolicy::None,
+            ),
         ];
         let connections = vec![
             Connection::new(0, 2, 1.0, 2.0, 0, 1.0, 1.0, 5.0, 5.0),
@@ -847,6 +1045,9 @@ mod tests {
             0.0,
             0.0,
             0.98,
+            10.0,
+            None,
+            EpisodeResetPolicy::None,
         )];
         let connections = vec![Connection::new(0, 0, 0.4, 1.5, 0, 1.0, 1.0, 5.0, 5.0)];
         let mut network = Network::new(nodes, connections, vec![]);
@@ -884,6 +1085,9 @@ mod tests {
             0.0,
             0.0,
             0.7,
+            10.0,
+            None,
+            EpisodeResetPolicy::None,
         )];
         let connections = vec![Connection::new(0, 0, 0.12, 1.0, 0, 1.0, 1.0, 5.0, 5.0)];
         let mut network = Network::new(nodes, connections, vec![]);
@@ -905,8 +1109,34 @@ mod tests {
     #[test]
     fn excitatory_spike_delivers_alpha_kernel_over_time() {
         let nodes = vec![
-            Node::new(0, NodeType::Excitatory, 0.2, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0),
-            Node::new(1, NodeType::Excitatory, 10.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0),
+            Node::new(
+                0,
+                NodeType::Excitatory,
+                0.2,
+                1.0,
+                1.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                10.0,
+                None,
+                EpisodeResetPolicy::None,
+            ),
+            Node::new(
+                1,
+                NodeType::Excitatory,
+                10.0,
+                0.0,
+                1.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                10.0,
+                None,
+                EpisodeResetPolicy::None,
+            ),
         ];
         let connections = vec![Connection::new(0, 1, 1.0, 2.0, 0, 1.0, 1.0, 5.0, 5.0)];
         let mut network = Network::new(nodes, connections, vec![0]);
@@ -985,6 +1215,100 @@ mod tests {
         let summary = network.apply_structural_plasticity(&config);
         assert_eq!(summary.pruned_connections, 1);
         assert!(network.connections[0].weight <= config.weight_floor + 1e-6);
+    }
+
+    #[test]
+    fn energy_cap_limits_state_growth() {
+        let mut node = Node::new(
+            0,
+            NodeType::Excitatory,
+            0.1,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.5,
+            None,
+            EpisodeResetPolicy::None,
+        );
+
+        node.accum_exc = 10.0;
+        node.step_integrate();
+        assert!(node.potential <= 0.5 + 1e-6);
+        assert!(node.potential >= -0.5 - 1e-6);
+
+        node.accum_exc = -10.0;
+        node.step_integrate();
+        assert!(node.potential >= -0.5 - 1e-6);
+        assert!(node.potential <= 0.5 + 1e-6);
+    }
+
+    #[test]
+    fn nan_states_are_sanitised() {
+        let mut node = Node::new(
+            0,
+            NodeType::Excitatory,
+            0.1,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            None,
+            EpisodeResetPolicy::None,
+        );
+
+        node.potential = f32::NAN;
+        node.activation = f32::NAN;
+        node.adaptation = f32::NAN;
+        node.modulation = f32::NAN;
+        node.eligibility = f32::NAN;
+        node.inhibition_accumulator = f32::NAN;
+        node.accum_exc = f32::NAN;
+        node.accum_inh = f32::NAN;
+        node.future_exc[0] = f32::NAN;
+
+        node.step_integrate();
+
+        assert_eq!(node.potential, 0.0);
+        assert_eq!(node.activation, 0.0);
+        assert_eq!(node.adaptation, 0.0);
+        assert_eq!(node.modulation, 0.0);
+        assert!(node.future_exc.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn episodic_reset_policy_resets_state() {
+        let mut node = Node::new(
+            0,
+            NodeType::Excitatory,
+            0.1,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            Some(2),
+            EpisodeResetPolicy::Hard,
+        );
+
+        node.accum_exc = 1.0;
+        node.step_integrate();
+        assert!(node.potential > 0.0);
+
+        node.accum_exc = 1.0;
+        node.step_integrate();
+        assert_eq!(node.potential, 0.0);
+
+        node.accum_exc = 1.0;
+        node.step_integrate();
+        assert!(node.potential > 0.0);
     }
 
     #[test]

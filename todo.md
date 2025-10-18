@@ -3,7 +3,6 @@
 ## Architecture and Crate Layout
 
 ## Signal Graph (S)
-- Extend node state handling to include energy caps, NaN guards, and episodic reset policies required by the production design.
 
 ## Diffusion Loop (D)
 - Upgrade the diffusion policy to follow the scheduled alpha_t and sigma_t annealing, entropy-aware amplification/suppression, and ANN-based fact recruitment.
