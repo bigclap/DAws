@@ -19,3 +19,4 @@
 - Built safetensors/parquet IO covering embedding tables, graph snapshots, and retriever KV memories with end-to-end tests.
 - Implemented the ANN/HNSW retriever crate with persistent KV storage and diffusion recruitment APIs.
 - Author the offline decoder trainer with mmap dataset loader, AdamW schedule (warmup + cosine), optional mixed precision, and validation metrics (cosine@median, retrieval rank@k, distinct-n, ppl surrogate).
+- Added online plasticity routines that perform reward-modulated updates on schedule, handle structural pruning/growth, and retain eligibility traces for inspection.
