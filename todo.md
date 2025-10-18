@@ -5,7 +5,6 @@
 ## Signal Graph (S)
 
 ## Diffusion Loop (D)
-- Track convergence diagnostics (`J_t`, stability, energy monotonicity) and expose stop criteria aligned with the roadmap.
 
 ## Encoder/Decoder (E/E′)
 - Swap the table encoder/decoder pair for Candle-backed models: load a frozen text encoder (`e5-small` or MiniLM) and implement the Transformer/GRU decoder with virtual prefix tokens and cosine-aligned loss.

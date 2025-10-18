@@ -1,7 +1,6 @@
-use std::cmp::Ordering;
-
 use core_graph::Network;
-use retriever::Retriever;
+mod fact_recruitment;
+pub use fact_recruitment::FactRecruitment;
 
 #[derive(Clone, Debug)]
 pub struct AnnealingSchedule {
@@ -45,147 +44,86 @@ impl Default for EntropyPolicy {
 }
 
 #[derive(Clone, Debug)]
-pub struct FactRecruitment {
-    retriever: Retriever,
-    facts: Vec<Vec<f32>>,
-    strength: f32,
-    temperature: f32,
-}
-
-impl FactRecruitment {
-    pub fn new(
-        retriever: Retriever,
-        facts: Vec<Vec<f32>>,
-        strength: f32,
-        temperature: f32,
-    ) -> Self {
-        Self {
-            retriever,
-            facts,
-            strength: strength.max(0.0),
-            temperature: temperature.max(1e-3),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.facts.is_empty()
-    }
-
-    pub fn recruit(&self, query: &[f32]) -> Option<Vec<f32>> {
-        if self.is_empty() || query.is_empty() {
-            return None;
-        }
-        let mut blended = vec![0.0; query.len()];
-        let mut weight_sum = 0.0f32;
-        for (idx, similarity) in self.approximate_candidates(query) {
-            let fact = self.facts.get(idx)?;
-            if fact.len() != query.len() {
-                continue;
-            }
-            let weight = ((similarity + 1.0) * 0.5)
-                .clamp(0.0, 1.0)
-                .powf(1.0 / self.temperature);
-            if weight <= 0.0 {
-                continue;
-            }
-            weight_sum += weight;
-            for (slot, &value) in blended.iter_mut().zip(fact.iter()) {
-                *slot += weight * value;
-            }
-        }
-        if weight_sum <= 0.0 {
-            return None;
-        }
-        for value in &mut blended {
-            *value = (*value / weight_sum) * self.strength;
-        }
-        Some(blended)
-    }
-
-    fn approximate_candidates(&self, query: &[f32]) -> Vec<(usize, f32)> {
-        let total = self.facts.len();
-        if total == 0 {
-            return Vec::new();
-        }
-        let top_k = self.retriever.top_k().max(1);
-        let step = (total / (top_k * 2)).max(1);
-        let mut scored: Vec<_> = (0..total)
-            .step_by(step)
-            .filter_map(|idx| {
-                let fact = self.facts.get(idx)?;
-                (fact.len() == query.len()).then(|| (idx, cosine_similarity(query, fact)))
-            })
-            .collect();
-        if scored.is_empty() {
-            return scored;
-        }
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
-        scored.truncate(top_k);
-        if step == 1 {
-            return scored;
-        }
-        let mut refined = scored.clone();
-        let window = step.min(4);
-        for &(center, _) in &scored {
-            let start = center.saturating_sub(window);
-            let end = (center + window).min(total - 1);
-            for idx in start..=end {
-                if refined.iter().any(|(seen, _)| *seen == idx) {
-                    continue;
-                }
-                if let Some(fact) = self.facts.get(idx) {
-                    if fact.len() == query.len() {
-                        refined.push((idx, cosine_similarity(query, fact)));
-                    }
-                }
-            }
-        }
-        refined.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
-        refined.truncate(top_k);
-        refined
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct DiffusionConfig {
     pub alpha_schedule: AnnealingSchedule,
     pub sigma_schedule: AnnealingSchedule,
     pub tolerance: f32,
+    pub jt_tolerance: f32,
+    pub stability_tolerance: f32,
+    pub stability_window: usize,
+    pub max_energy_increase: usize,
     pub max_iters: usize,
     pub entropy_policy: EntropyPolicy,
     pub fact_recruitment: Option<FactRecruitment>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct DiffusionDiagnostics {
+    pub iterations: usize,
+    pub similarity: f32,
+    pub jt: f32,
+    pub stability_streak: usize,
+    pub energy: f32,
+    pub energy_monotonic: bool,
+}
+
+impl Default for DiffusionDiagnostics {
+    fn default() -> Self {
+        Self {
+            iterations: 0,
+            similarity: 1.0,
+            jt: 0.0,
+            stability_streak: 0,
+            energy: 0.0,
+            energy_monotonic: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DiffusionOutcome {
     pub state: Vec<f32>,
+    pub diagnostics: DiffusionDiagnostics,
 }
 
 pub struct DiffusionLoop {
     config: DiffusionConfig,
-    last_similarity: f32,
-    last_iterations: usize,
+    diagnostics: DiffusionDiagnostics,
 }
 
 impl DiffusionLoop {
     pub fn new(config: DiffusionConfig) -> Self {
         Self {
             config,
-            last_similarity: 0.0,
-            last_iterations: 0,
+            diagnostics: DiffusionDiagnostics::default(),
         }
     }
 
     pub fn run(&mut self, network: &mut Network) -> DiffusionOutcome {
         let mut current = network.state_vector();
         if current.is_empty() {
-            self.last_similarity = 1.0;
-            self.last_iterations = 0;
-            return DiffusionOutcome { state: current };
+            self.diagnostics = DiffusionDiagnostics {
+                iterations: 0,
+                similarity: 1.0,
+                jt: 0.0,
+                stability_streak: 0,
+                energy: network.energy(),
+                energy_monotonic: true,
+            };
+            return DiffusionOutcome {
+                state: current,
+                diagnostics: self.diagnostics,
+            };
         }
         let mut last_similarity = 1.0f32;
+        let mut stability_streak = 0usize;
+        let mut last_energy = network.energy();
+        let mut energy_increase_streak = 0usize;
+        let mut energy_monotonic = true;
+        let mut last_jt = 0.0f32;
         for iter in 0..self.config.max_iters {
             let consensus = network.consensus_state();
+            last_jt = jt_metric(&current, &consensus);
             let alpha = apply_entropy_policy(
                 self.config.alpha_schedule.value_at(iter),
                 normalised_entropy(&current),
@@ -212,30 +150,95 @@ impl DiffusionLoop {
                 );
             }
             last_similarity = cosine_similarity(&current, &next);
+            let delta = stability_delta(&current, &next);
+            if delta <= self.config.stability_tolerance {
+                stability_streak = stability_streak.saturating_add(1);
+            } else {
+                stability_streak = 0;
+            }
             network.set_state(&next);
             current = next;
-            if 1.0 - last_similarity <= self.config.tolerance {
-                self.last_iterations = iter + 1;
-                self.last_similarity = last_similarity;
+            let energy = network.energy();
+            if energy > last_energy + 1e-6 {
+                energy_increase_streak = energy_increase_streak.saturating_add(1);
+                energy_monotonic = false;
+            } else {
+                energy_increase_streak = 0;
+            }
+            last_energy = energy;
+
+            let reached_similarity = 1.0 - last_similarity <= self.config.tolerance;
+            let reached_jt = self.config.jt_tolerance > 0.0 && last_jt <= self.config.jt_tolerance;
+            let reached_stability = self.config.stability_window > 0
+                && stability_streak >= self.config.stability_window;
+            let energy_violation = self.config.max_energy_increase > 0
+                && energy_increase_streak >= self.config.max_energy_increase;
+
+            if reached_similarity || reached_jt || reached_stability || energy_violation {
+                let diagnostics = DiffusionDiagnostics {
+                    iterations: iter + 1,
+                    similarity: last_similarity,
+                    jt: last_jt,
+                    stability_streak,
+                    energy,
+                    energy_monotonic,
+                };
+                self.diagnostics = diagnostics;
                 return DiffusionOutcome {
                     state: network.state_vector(),
+                    diagnostics,
                 };
             }
         }
-        self.last_iterations = self.config.max_iters;
-        self.last_similarity = last_similarity;
+        let diagnostics = DiffusionDiagnostics {
+            iterations: self.config.max_iters,
+            similarity: last_similarity,
+            jt: last_jt,
+            stability_streak,
+            energy: last_energy,
+            energy_monotonic,
+        };
+        self.diagnostics = diagnostics;
         DiffusionOutcome {
             state: network.state_vector(),
+            diagnostics,
         }
     }
 
     pub fn last_similarity(&self) -> f32 {
-        self.last_similarity
+        self.diagnostics.similarity
     }
 
     pub fn last_iterations(&self) -> usize {
-        self.last_iterations
+        self.diagnostics.iterations
     }
+
+    pub fn diagnostics(&self) -> DiffusionDiagnostics {
+        self.diagnostics
+    }
+}
+
+fn jt_metric(current: &[f32], consensus: &[f32]) -> f32 {
+    if current.is_empty() || current.len() != consensus.len() {
+        return 0.0;
+    }
+    let sum: f32 = current
+        .iter()
+        .zip(consensus.iter())
+        .map(|(a, b)| {
+            let diff = a - b;
+            diff * diff
+        })
+        .sum();
+    sum / current.len() as f32
+}
+
+fn stability_delta(current: &[f32], next: &[f32]) -> f32 {
+    current
+        .iter()
+        .zip(next.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max)
 }
 
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -296,6 +299,5 @@ fn apply_entropy_policy(alpha: f32, entropy: f32, policy: &EntropyPolicy) -> f32
     }
     scaled
 }
-
 #[cfg(test)]
 mod tests;

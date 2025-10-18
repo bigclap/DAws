@@ -12,3 +12,5 @@
 - Replaced the XOR demo plumbing with reusable graph assembly, scheduling, and profiling components shared across crates.
 - Implemented structural plasticity with co-activation counters, growth/pruning rules, and delay retuning informed by eligibility traces.
 - Extended node state handling with energy caps, NaN guards, and episodic reset policies aligned with production requirements.
+- Instrumented the diffusion loop with configurable convergence diagnostics (J_t, stability streaks, energy monotonicity) and
+  stop criteria aligned with the roadmap.
