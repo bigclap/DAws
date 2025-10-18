@@ -3,7 +3,6 @@
 ## Architecture and Crate Layout
 
 ## Signal Graph (S)
-- Add configurable inhibitory pools and regional detectors to support WTA dynamics and gate refresh strategies.
 - Extend node state handling to include energy caps, NaN guards, and episodic reset policies required by the production design.
 
 ## Diffusion Loop (D)
