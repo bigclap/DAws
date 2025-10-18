@@ -1,10 +1,16 @@
 //! Event-driven spiking network core with local plasticity helpers.
 
 pub mod assembly;
+pub mod pools;
 pub mod profiling;
 
 pub use assembly::{AssemblyError, ConnectionParams, GraphBuilder, NodeParams};
+pub use pools::{InhibitoryPoolConfig, RegionalDetectorConfig, RegionalDetectorState};
 pub use profiling::{NetworkProfiler, ProfileSummary, ProfilerConfig, StepObserver, StepSnapshot};
+
+use std::collections::HashMap;
+
+use self::pools::{InhibitoryPoolRuntime, RegionalDetectorRuntime};
 
 /// Maximum discrete synaptic delay supported by the simulator.
 pub const MAX_DELAY: usize = 16;
@@ -267,6 +273,9 @@ pub struct Network {
     outgoing: Vec<Vec<usize>>,
     incoming: Vec<Vec<usize>>,
     input_nodes: Vec<usize>,
+    inhibitory_pools: Vec<InhibitoryPoolRuntime>,
+    regional_detectors: Vec<RegionalDetectorRuntime>,
+    detector_lookup: HashMap<String, usize>,
 }
 
 impl Network {
@@ -284,6 +293,9 @@ impl Network {
             outgoing,
             incoming,
             input_nodes,
+            inhibitory_pools: Vec::new(),
+            regional_detectors: Vec::new(),
+            detector_lookup: HashMap::new(),
         }
     }
 
@@ -302,6 +314,9 @@ impl Network {
             conn.last_pre_spike = None;
             conn.coactivation = 0.0;
             conn.inactivity_steps = 0;
+        }
+        for detector in &mut self.regional_detectors {
+            detector.reset();
         }
     }
 
@@ -323,6 +338,66 @@ impl Network {
         }
     }
 
+    /// Configures inhibitory pools and optional regional detectors.
+    pub fn configure_inhibitory_pools(
+        &mut self,
+        pools: Vec<InhibitoryPoolConfig>,
+    ) -> Result<(), AssemblyError> {
+        self.inhibitory_pools.clear();
+        self.regional_detectors.clear();
+        self.detector_lookup.clear();
+
+        for pool in pools {
+            let InhibitoryPoolConfig {
+                members,
+                inhibition_gain,
+                detector,
+            } = pool;
+            let detector_index = if let Some(detector_cfg) = detector {
+                if self
+                    .detector_lookup
+                    .contains_key(detector_cfg.label.as_str())
+                {
+                    return Err(AssemblyError::DuplicateDetectorLabel {
+                        label: detector_cfg.label,
+                    });
+                }
+                let index = self.regional_detectors.len();
+                self.detector_lookup
+                    .insert(detector_cfg.label.clone(), index);
+                self.regional_detectors
+                    .push(RegionalDetectorRuntime::new(detector_cfg));
+                Some(index)
+            } else {
+                None
+            };
+
+            self.inhibitory_pools.push(InhibitoryPoolRuntime::new(
+                members,
+                inhibition_gain,
+                detector_index,
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Returns the state tracked for the detector with the supplied label.
+    pub fn regional_detector_state(&self, label: &str) -> Option<RegionalDetectorState> {
+        self.detector_lookup
+            .get(label)
+            .and_then(|&idx| self.regional_detectors.get(idx))
+            .map(|detector| detector.state())
+    }
+
+    /// Returns snapshots for all configured regional detectors.
+    pub fn regional_detector_states(&self) -> Vec<RegionalDetectorState> {
+        self.regional_detectors
+            .iter()
+            .map(|detector| detector.state())
+            .collect()
+    }
+
     /// Advances the network by one discrete step and returns fired nodes.
     pub fn step(&mut self, step: usize) -> StepReport {
         let mut report = StepReport::default();
@@ -334,6 +409,8 @@ impl Network {
         for node in &mut self.nodes {
             node.step_integrate();
         }
+
+        self.apply_inhibitory_pools(step);
 
         let modulatory_spikes: Vec<usize> = self
             .nodes
@@ -458,6 +535,42 @@ impl Network {
             .get(connection_id)
             .map(|conn| (conn.elig_fast, conn.elig_slow))
             .unwrap_or((0.0, 0.0))
+    }
+
+    fn apply_inhibitory_pools(&mut self, step: usize) {
+        for idx in 0..self.inhibitory_pools.len() {
+            let (winner, peak) = {
+                let pool = &self.inhibitory_pools[idx];
+                pool.determine_winner(&self.nodes)
+            };
+
+            if let Some(winner_id) = winner {
+                let members = self.inhibitory_pools[idx].members().to_vec();
+                let gain = self.inhibitory_pools[idx].inhibition_gain().max(0.0);
+                if gain > 0.0 {
+                    for node_id in members {
+                        if node_id == winner_id {
+                            continue;
+                        }
+                        if let Some(node) = self.nodes.get_mut(node_id) {
+                            if node.potential.is_finite() {
+                                node.potential -= gain;
+                                if !node.potential.is_finite() {
+                                    node.potential = 0.0;
+                                }
+                            }
+                            node.inhibition_accumulator += gain;
+                        }
+                    }
+                }
+            }
+
+            if let Some(detector_idx) = self.inhibitory_pools[idx].detector_index() {
+                if let Some(detector) = self.regional_detectors.get_mut(detector_idx) {
+                    detector.observe(step, winner, peak);
+                }
+            }
+        }
     }
 
     /// Updates STDP traces for a presynaptic spike event.

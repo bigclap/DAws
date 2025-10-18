@@ -1,6 +1,6 @@
 //! Helpers for declarative network assembly used by demos and tests.
 
-use crate::{Connection, Network, Node, NodeType};
+use crate::{Connection, Network, Node, NodeType, pools::InhibitoryPoolConfig};
 
 /// Parameters describing the static configuration of a [`Node`].
 #[derive(Clone, Debug)]
@@ -119,6 +119,10 @@ impl ConnectionParams {
 pub enum AssemblyError {
     /// A connection referenced a node identifier that was never added.
     MissingNode { node_id: usize },
+    /// An inhibitory pool referenced a node identifier that was never added.
+    MissingPoolNode { node_id: usize },
+    /// Regional detectors must have unique labels.
+    DuplicateDetectorLabel { label: String },
 }
 
 impl core::fmt::Display for AssemblyError {
@@ -126,6 +130,12 @@ impl core::fmt::Display for AssemblyError {
         match self {
             AssemblyError::MissingNode { node_id } => {
                 write!(f, "connection references missing node {node_id}")
+            }
+            AssemblyError::MissingPoolNode { node_id } => {
+                write!(f, "pool references missing node {node_id}")
+            }
+            AssemblyError::DuplicateDetectorLabel { label } => {
+                write!(f, "detector label '{label}' was registered more than once")
             }
         }
     }
@@ -139,6 +149,7 @@ pub struct GraphBuilder {
     nodes: Vec<NodeParams>,
     connections: Vec<ConnectionParams>,
     input_nodes: Vec<usize>,
+    inhibitory_pools: Vec<InhibitoryPoolConfig>,
 }
 
 impl GraphBuilder {
@@ -161,6 +172,11 @@ impl GraphBuilder {
         id
     }
 
+    /// Registers an inhibitory pool affecting the supplied members.
+    pub fn add_inhibitory_pool(&mut self, pool: InhibitoryPoolConfig) {
+        self.inhibitory_pools.push(pool);
+    }
+
     /// Registers a directed connection between previously added nodes.
     pub fn add_connection(&mut self, params: ConnectionParams) {
         self.connections.push(params);
@@ -168,8 +184,15 @@ impl GraphBuilder {
 
     /// Finalises the builder, producing a [`Network`] instance.
     pub fn build(self) -> Result<Network, AssemblyError> {
-        let node_count = self.nodes.len();
-        for conn in &self.connections {
+        let GraphBuilder {
+            nodes,
+            connections,
+            input_nodes,
+            inhibitory_pools,
+        } = self;
+
+        let node_count = nodes.len();
+        for conn in &connections {
             if conn.from >= node_count {
                 return Err(AssemblyError::MissingNode { node_id: conn.from });
             }
@@ -178,8 +201,15 @@ impl GraphBuilder {
             }
         }
 
-        let nodes: Vec<Node> = self
-            .nodes
+        for pool in &inhibitory_pools {
+            for &member in &pool.members {
+                if member >= node_count {
+                    return Err(AssemblyError::MissingPoolNode { node_id: member });
+                }
+            }
+        }
+
+        let nodes: Vec<Node> = nodes
             .into_iter()
             .enumerate()
             .map(|(id, params)| {
@@ -197,8 +227,7 @@ impl GraphBuilder {
             })
             .collect();
 
-        let connections: Vec<Connection> = self
-            .connections
+        let connections: Vec<Connection> = connections
             .into_iter()
             .map(|params| {
                 Connection::new(
@@ -215,7 +244,9 @@ impl GraphBuilder {
             })
             .collect();
 
-        Ok(Network::new(nodes, connections, self.input_nodes))
+        let mut network = Network::new(nodes, connections, input_nodes);
+        network.configure_inhibitory_pools(inhibitory_pools)?;
+        Ok(network)
     }
 }
 
