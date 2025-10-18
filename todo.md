@@ -7,7 +7,6 @@
 ## Diffusion Loop (D)
 
 ## Encoder/Decoder (E/E′)
-- Build safetensors/parquet IO for embeddings, graph snapshots (`*.stt`, `*.gbin`), and KV memories (`hnsw.index`, `vecs.st`, `meta.parquet`).
 
 ## Retriever and Memory
 - Implement the ANN/HNSW retriever crate with KV-memory persistence and recruitment APIs used by the diffusion heuristics.

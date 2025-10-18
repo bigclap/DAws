@@ -1,16 +1,19 @@
 //! Event-driven spiking network core with local plasticity helpers.
 
 pub mod assembly;
+pub mod io;
 pub mod pools;
 pub mod profiling;
 
 pub use assembly::{AssemblyError, ConnectionParams, GraphBuilder, NodeParams};
+pub use io::{GraphSnapshot, GraphSnapshotError};
 pub use pools::{InhibitoryPoolConfig, RegionalDetectorConfig, RegionalDetectorState};
 pub use profiling::{NetworkProfiler, ProfileSummary, ProfilerConfig, StepObserver, StepSnapshot};
 
 use std::collections::HashMap;
 
 use self::pools::{InhibitoryPoolRuntime, RegionalDetectorRuntime};
+use serde::{Deserialize, Serialize};
 
 /// Maximum discrete synaptic delay supported by the simulator.
 pub const MAX_DELAY: usize = 16;
@@ -69,7 +72,7 @@ pub struct StructuralChangeSummary {
     pub regrown_connections: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// Functional category assigned to a [`Node`].
 pub enum NodeType {
     /// Excitatory projection neuron delivering positive current.
@@ -82,7 +85,7 @@ pub enum NodeType {
     Memory,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Policy applied when an episode boundary is reached.
 pub enum EpisodeResetPolicy {
     /// No reset is performed when the boundary is reached.
@@ -93,7 +96,7 @@ pub enum EpisodeResetPolicy {
     Hard,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 /// Spiking unit with alpha-kernel synaptic integration and divisive normalisation.
 pub struct Node {
     pub id: usize,
@@ -305,7 +308,7 @@ impl Node {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 /// Directed synapse with reward-modulated STDP traces.
 pub struct Connection {
     pub from: usize,
@@ -501,6 +504,29 @@ impl Network {
         self.regional_detectors
             .iter()
             .map(|detector| detector.state())
+            .collect()
+    }
+
+    /// Returns the declarative configuration of all inhibitory pools.
+    pub fn inhibitory_pool_configs(&self) -> Vec<InhibitoryPoolConfig> {
+        self.inhibitory_pools
+            .iter()
+            .map(|pool| {
+                let detector = pool.detector_index().and_then(|idx| {
+                    self.regional_detectors
+                        .get(idx)
+                        .map(|runtime| RegionalDetectorConfig {
+                            label: runtime.label().to_string(),
+                            activation_threshold: runtime.activation_threshold(),
+                            refresh_interval: runtime.refresh_interval(),
+                        })
+                });
+                InhibitoryPoolConfig {
+                    members: pool.members().to_vec(),
+                    inhibition_gain: pool.inhibition_gain(),
+                    detector,
+                }
+            })
             .collect()
     }
 

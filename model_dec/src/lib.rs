@@ -1,5 +1,9 @@
 //! Decoder utilities translating encoder embeddings into cosine-aligned targets.
 
+pub mod binary;
+
+pub use binary::BinaryDecoder;
+
 use candle_core::{D, Device, Result as CandleResult, Tensor};
 use candle_nn::{Linear, Module, RNN, VarBuilder, linear, ops, rnn::gru};
 use thiserror::Error;

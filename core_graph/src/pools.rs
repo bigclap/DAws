@@ -1,7 +1,8 @@
 use crate::Node;
+use serde::{Deserialize, Serialize};
 
 /// Declarative description of an inhibitory pool.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct InhibitoryPoolConfig {
     /// Nodes governed by the pool.
     pub members: Vec<usize>,
@@ -29,7 +30,7 @@ impl InhibitoryPoolConfig {
 }
 
 /// Configuration of a detector tracking regional activity.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct RegionalDetectorConfig {
     /// Identifier used when querying detector state.
     pub label: String,
@@ -166,5 +167,17 @@ impl RegionalDetectorRuntime {
 
     pub(crate) fn needs_refresh(&self) -> bool {
         self.refresh_interval > 0 && self.stale_steps >= self.refresh_interval
+    }
+
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub(crate) fn activation_threshold(&self) -> f32 {
+        self.activation_threshold
+    }
+
+    pub(crate) fn refresh_interval(&self) -> usize {
+        self.refresh_interval
     }
 }
