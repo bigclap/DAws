@@ -110,7 +110,41 @@ fn diffusion_reports_convergence_diagnostics() {
     assert!(diagnostics.jt >= 0.0);
     assert!(diagnostics.stability_streak <= 2);
     assert!(diagnostics.energy >= 0.0);
+    assert!(diagnostics.jt_monotonic);
+    assert_ne!(diagnostics.stop_reason, DiffusionStopReason::IterationCap);
     assert!(!diagnostics.energy_monotonic || diagnostics.iterations <= 1);
     assert_eq!(diagnostics.iteration_times_ms.len(), diagnostics.iterations);
     assert!(diagnostics.average_iteration_ms >= 0.0);
+}
+
+#[test]
+fn diffusion_honours_iteration_cap() {
+    let mut builder = GraphBuilder::new();
+    let driver = builder.add_node(NodeParams {
+        node_type: NodeType::Excitatory,
+        ..NodeParams::default()
+    });
+    let target = builder.add_node(NodeParams::default());
+    builder.add_connection(ConnectionParams::new(
+        driver, target, 1.0, 1.0, 0, 1.0, 1.0, 5.0, 5.0,
+    ));
+    let mut network = builder.build().expect("valid network");
+    network.set_state(&[1.0, 0.0]);
+
+    let mut diffusion = DiffusionLoop::new(DiffusionConfig {
+        alpha_schedule: AnnealingSchedule::constant(0.1),
+        sigma_schedule: AnnealingSchedule::constant(0.0),
+        tolerance: 0.0,
+        jt_tolerance: 0.0,
+        stability_tolerance: 0.0,
+        stability_window: usize::MAX,
+        max_energy_increase: usize::MAX,
+        max_iters: 3,
+        entropy_policy: EntropyPolicy::default(),
+        fact_recruitment: None,
+    });
+
+    let outcome = diffusion.run(&mut network);
+    assert_eq!(outcome.diagnostics.iterations, 3);
+    assert_eq!(outcome.diagnostics.stop_reason, DiffusionStopReason::IterationCap);
 }
