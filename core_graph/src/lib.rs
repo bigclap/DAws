@@ -813,6 +813,48 @@ impl Network {
             .sum()
     }
 
+    /// Returns the number of active nodes and edges given an activation threshold.
+    pub fn active_counts(&self, activation_threshold: f32) -> (usize, usize) {
+        if self.nodes.is_empty() {
+            return (0, 0);
+        }
+        let mut active_mask = vec![false; self.nodes.len()];
+        let mut active_nodes = 0usize;
+        for (idx, node) in self.nodes.iter().enumerate() {
+            if node.activation >= activation_threshold {
+                active_mask[idx] = true;
+                active_nodes += 1;
+            }
+        }
+        let mut active_edges = 0usize;
+        for conn in &self.connections {
+            if conn.weight.abs() <= f32::EPSILON {
+                continue;
+            }
+            if active_mask.get(conn.from).copied().unwrap_or(false)
+                && active_mask.get(conn.to).copied().unwrap_or(false)
+            {
+                active_edges += 1;
+            }
+        }
+        (active_nodes, active_edges)
+    }
+
+    /// Rough estimate of heap fragmentation for the core network structures.
+    pub fn memory_fragmentation(&self) -> f32 {
+        fn fragmentation(len: usize, capacity: usize) -> f32 {
+            if capacity == 0 {
+                return 0.0;
+            }
+            let utilisation = len as f32 / capacity as f32;
+            (1.0 - utilisation).clamp(0.0, 1.0)
+        }
+        let node_fragmentation = fragmentation(self.nodes.len(), self.nodes.capacity());
+        let connection_fragmentation =
+            fragmentation(self.connections.len(), self.connections.capacity());
+        (node_fragmentation + connection_fragmentation) * 0.5
+    }
+
     /// Identifiers for nodes that receive embedding inputs.
     pub fn input_nodes(&self) -> &[usize] {
         &self.input_nodes

@@ -1,6 +1,7 @@
 //! Generic scheduler that coordinates graph steps and diffusion refinement.
 
 use core_graph::{Network, StepObserver};
+use tracing::{info, instrument};
 
 use crate::diffusion::DiffusionLoop;
 
@@ -43,6 +44,7 @@ impl ReasoningScheduler {
     }
 
     /// Executes a reasoning pass for the supplied embedding.
+    #[instrument(skip(self, network, embedding, diffusion, observer))]
     pub fn run_case(
         &self,
         network: &mut Network,
@@ -54,6 +56,8 @@ impl ReasoningScheduler {
         network.inject_embedding(embedding);
 
         for step in 0..self.config.settle_steps {
+            let step_span = tracing::info_span!("settle_step", step);
+            let _entered = step_span.enter();
             let report = network.step(step);
             if let Some(hook) = observer.as_mut() {
                 hook.on_step(step, network, &report);
@@ -62,12 +66,19 @@ impl ReasoningScheduler {
 
         let state = diffusion.run(network).state;
         let energy = network.energy();
-        SchedulerOutcome {
+        let outcome = SchedulerOutcome {
             state,
             iterations: diffusion.last_iterations(),
             similarity: diffusion.last_similarity(),
             energy,
-        }
+        };
+        info!(
+            iterations = outcome.iterations,
+            similarity = outcome.similarity,
+            energy = outcome.energy,
+            "scheduler completed",
+        );
+        outcome
     }
 }
 

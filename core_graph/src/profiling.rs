@@ -31,6 +31,9 @@ pub struct StepSnapshot {
     pub modulatory_spikes: Vec<usize>,
     pub energy: f32,
     pub active_ratio: f32,
+    pub active_nodes: usize,
+    pub active_edges: usize,
+    pub fragmentation: f32,
 }
 
 /// Aggregate statistics derived from the recorded snapshots.
@@ -39,6 +42,9 @@ pub struct ProfileSummary {
     pub steps: usize,
     pub average_energy: f32,
     pub average_active_ratio: f32,
+    pub average_active_nodes: f32,
+    pub average_active_edges: f32,
+    pub average_fragmentation: f32,
 }
 
 /// Profiler implementation that collects per-step snapshots.
@@ -74,31 +80,47 @@ impl NetworkProfiler {
                 steps: 0,
                 average_energy: 0.0,
                 average_active_ratio: 0.0,
+                average_active_nodes: 0.0,
+                average_active_edges: 0.0,
+                average_fragmentation: 0.0,
             };
         }
         let mut energy_sum = 0.0;
         let mut active_sum = 0.0;
+        let mut node_sum = 0.0;
+        let mut edge_sum = 0.0;
+        let mut fragmentation_sum = 0.0;
         for snapshot in &self.snapshots {
             energy_sum += snapshot.energy;
             active_sum += snapshot.active_ratio;
+            node_sum += snapshot.active_nodes as f32;
+            edge_sum += snapshot.active_edges as f32;
+            fragmentation_sum += snapshot.fragmentation;
         }
         let count = self.snapshots.len() as f32;
         ProfileSummary {
             steps: self.snapshots.len(),
             average_energy: energy_sum / count,
             average_active_ratio: active_sum / count,
+            average_active_nodes: node_sum / count,
+            average_active_edges: edge_sum / count,
+            average_fragmentation: fragmentation_sum / count,
         }
     }
 }
 
 impl StepObserver for NetworkProfiler {
     fn on_step(&mut self, step: usize, network: &Network, report: &StepReport) {
+        let (active_nodes, active_edges) = network.active_counts(self.config.activation_threshold);
         let snapshot = StepSnapshot {
             step,
             spikes: report.spikes.clone(),
             modulatory_spikes: report.modulatory_spikes.clone(),
             energy: network.energy(),
             active_ratio: network.active_ratio(self.config.activation_threshold),
+            active_nodes,
+            active_edges,
+            fragmentation: network.memory_fragmentation(),
         };
         self.snapshots.push(snapshot);
     }
@@ -127,6 +149,9 @@ mod tests {
         let summary = profiler.summary();
         assert_eq!(summary.steps, 1);
         assert!(summary.average_energy >= 0.0);
+        assert!(summary.average_active_nodes >= 0.0);
+        assert!(summary.average_active_edges >= 0.0);
+        assert!(summary.average_fragmentation >= 0.0);
     }
 
     #[test]
@@ -136,5 +161,8 @@ mod tests {
         assert_eq!(summary.steps, 0);
         assert_eq!(summary.average_energy, 0.0);
         assert_eq!(summary.average_active_ratio, 0.0);
+        assert_eq!(summary.average_active_nodes, 0.0);
+        assert_eq!(summary.average_active_edges, 0.0);
+        assert_eq!(summary.average_fragmentation, 0.0);
     }
 }

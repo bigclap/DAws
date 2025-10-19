@@ -1,4 +1,7 @@
+use std::time::Instant;
+
 use core_graph::Network;
+use tracing::{info, info_span, instrument};
 mod fact_recruitment;
 pub use fact_recruitment::FactRecruitment;
 
@@ -57,7 +60,7 @@ pub struct DiffusionConfig {
     pub fact_recruitment: Option<FactRecruitment>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct DiffusionDiagnostics {
     pub iterations: usize,
     pub similarity: f32,
@@ -65,6 +68,8 @@ pub struct DiffusionDiagnostics {
     pub stability_streak: usize,
     pub energy: f32,
     pub energy_monotonic: bool,
+    pub iteration_times_ms: Vec<f32>,
+    pub average_iteration_ms: f32,
 }
 
 impl Default for DiffusionDiagnostics {
@@ -76,6 +81,8 @@ impl Default for DiffusionDiagnostics {
             stability_streak: 0,
             energy: 0.0,
             energy_monotonic: true,
+            iteration_times_ms: Vec::new(),
+            average_iteration_ms: 0.0,
         }
     }
 }
@@ -99,6 +106,7 @@ impl DiffusionLoop {
         }
     }
 
+    #[instrument(skip(self, network))]
     pub fn run(&mut self, network: &mut Network) -> DiffusionOutcome {
         let mut current = network.state_vector();
         if current.is_empty() {
@@ -109,10 +117,12 @@ impl DiffusionLoop {
                 stability_streak: 0,
                 energy: network.energy(),
                 energy_monotonic: true,
+                iteration_times_ms: Vec::new(),
+                average_iteration_ms: 0.0,
             };
             return DiffusionOutcome {
                 state: current,
-                diagnostics: self.diagnostics,
+                diagnostics: self.diagnostics.clone(),
             };
         }
         let mut last_similarity = 1.0f32;
@@ -121,7 +131,11 @@ impl DiffusionLoop {
         let mut energy_increase_streak = 0usize;
         let mut energy_monotonic = true;
         let mut last_jt = 0.0f32;
+        let mut iteration_times_ms = Vec::new();
         for iter in 0..self.config.max_iters {
+            let iter_span = info_span!("diffusion_iteration", iteration = iter);
+            let _entered = iter_span.enter();
+            let iter_start = Instant::now();
             let consensus = network.consensus_state();
             last_jt = jt_metric(&current, &consensus);
             let alpha = apply_entropy_policy(
@@ -166,6 +180,16 @@ impl DiffusionLoop {
                 energy_increase_streak = 0;
             }
             last_energy = energy;
+            let elapsed = iter_start.elapsed().as_secs_f32() * 1000.0;
+            iteration_times_ms.push(elapsed);
+            tracing::debug!(
+                similarity = last_similarity,
+                jt = last_jt,
+                energy,
+                stability_streak,
+                elapsed_ms = elapsed,
+                "diffusion iteration metrics",
+            );
 
             let reached_similarity = 1.0 - last_similarity <= self.config.tolerance;
             let reached_jt = self.config.jt_tolerance > 0.0 && last_jt <= self.config.jt_tolerance;
@@ -175,6 +199,11 @@ impl DiffusionLoop {
                 && energy_increase_streak >= self.config.max_energy_increase;
 
             if reached_similarity || reached_jt || reached_stability || energy_violation {
+                let average_iteration_ms = if iteration_times_ms.is_empty() {
+                    0.0
+                } else {
+                    iteration_times_ms.iter().sum::<f32>() / iteration_times_ms.len() as f32
+                };
                 let diagnostics = DiffusionDiagnostics {
                     iterations: iter + 1,
                     similarity: last_similarity,
@@ -182,14 +211,30 @@ impl DiffusionLoop {
                     stability_streak,
                     energy,
                     energy_monotonic,
+                    iteration_times_ms: iteration_times_ms.clone(),
+                    average_iteration_ms,
                 };
-                self.diagnostics = diagnostics;
+                self.diagnostics = diagnostics.clone();
+                info!(
+                    iterations = diagnostics.iterations,
+                    similarity = diagnostics.similarity,
+                    jt = diagnostics.jt,
+                    stability_streak = diagnostics.stability_streak,
+                    energy = diagnostics.energy,
+                    average_iteration_ms = diagnostics.average_iteration_ms,
+                    "diffusion completed",
+                );
                 return DiffusionOutcome {
                     state: network.state_vector(),
                     diagnostics,
                 };
             }
         }
+        let average_iteration_ms = if iteration_times_ms.is_empty() {
+            0.0
+        } else {
+            iteration_times_ms.iter().sum::<f32>() / iteration_times_ms.len() as f32
+        };
         let diagnostics = DiffusionDiagnostics {
             iterations: self.config.max_iters,
             similarity: last_similarity,
@@ -197,8 +242,19 @@ impl DiffusionLoop {
             stability_streak,
             energy: last_energy,
             energy_monotonic,
+            iteration_times_ms,
+            average_iteration_ms,
         };
-        self.diagnostics = diagnostics;
+        self.diagnostics = diagnostics.clone();
+        info!(
+            iterations = diagnostics.iterations,
+            similarity = diagnostics.similarity,
+            jt = diagnostics.jt,
+            stability_streak = diagnostics.stability_streak,
+            energy = diagnostics.energy,
+            average_iteration_ms = diagnostics.average_iteration_ms,
+            "diffusion hit iteration cap",
+        );
         DiffusionOutcome {
             state: network.state_vector(),
             diagnostics,
@@ -213,8 +269,8 @@ impl DiffusionLoop {
         self.diagnostics.iterations
     }
 
-    pub fn diagnostics(&self) -> DiffusionDiagnostics {
-        self.diagnostics
+    pub fn diagnostics(&self) -> &DiffusionDiagnostics {
+        &self.diagnostics
     }
 }
 
