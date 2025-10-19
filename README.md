@@ -6,6 +6,9 @@ Prototype Rust workspace showcasing an event-driven reasoning pipeline with a di
 
 The library is documented in-source via Rustdoc comments. Generate the HTML documentation with `cargo doc --open`.
 
+An architectural walk-through covering crate responsibilities and data flow lives in
+[`docs/architecture_overview.md`](docs/architecture_overview.md).
+
 ## Testing
 
 Run the verification suite with `cargo test`.

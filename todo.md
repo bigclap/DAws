@@ -1,7 +1,5 @@
 # TODO
 
-## Architecture and Crate Layout
-
 ## Signal Graph (S)
 
 ## Diffusion Loop (D)
