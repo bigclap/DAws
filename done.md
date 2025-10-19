@@ -1,5 +1,6 @@
 # Done
 
+- Expanded CLI commands (`train`, `eval`, `infer`, `profile`) with Clap-based configuration loading, checkpoint summaries, and CPU profiling outputs.
 - Established a self-contained XOR demonstration that wires the diffusion loop, reward calculator, and spiking network core through the CLI for quick smoke testing.
 - Implemented an event-driven spiking network with excitatory, inhibitory, modulatory, and memory node dynamics, divisive normalisation, alpha-kernel delivery, and reward-modulated STDP traces.
 - Added configurable inhibitory pools with regional detectors to drive winner-take-all suppression and gate refresh monitoring.

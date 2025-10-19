@@ -15,5 +15,4 @@
 ## Evaluation and Profiling
 
 ## Tooling and Documentation
-- Expand CLI commands (`train`, `eval`, `infer`, `profile`) with Clap + TOML configuration handling, surfacing profiles and checkpoints.
 - Produce engineering documentation summarising ablations, convergence curves, energy comparisons against AR baselines, and final readiness criteria.

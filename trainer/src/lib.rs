@@ -101,9 +101,7 @@ mod tests {
         assert!(!outcome_first.applied_update);
         assert_eq!(plasticity.weights(), &[0.0, 0.0]);
 
-        let outcome_second = plasticity
-            .step(vec![0.5, 1.0], 0.8)
-            .expect("second step");
+        let outcome_second = plasticity.step(vec![0.5, 1.0], 0.8).expect("second step");
         assert!(outcome_second.applied_update);
         assert!(plasticity.weights()[1] > 0.0);
     }
