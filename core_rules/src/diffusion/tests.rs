@@ -146,5 +146,8 @@ fn diffusion_honours_iteration_cap() {
 
     let outcome = diffusion.run(&mut network);
     assert_eq!(outcome.diagnostics.iterations, 3);
-    assert_eq!(outcome.diagnostics.stop_reason, DiffusionStopReason::IterationCap);
+    assert_eq!(
+        outcome.diagnostics.stop_reason,
+        DiffusionStopReason::IterationCap
+    );
 }

@@ -1,4 +1,4 @@
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct OnlinePlasticityConfig {
@@ -118,8 +118,7 @@ impl OnlinePlasticity {
         let mut grown = 0usize;
         if reward.abs() >= self.config.grow_threshold {
             let direction = if reward >= 0.0 { 1.0 } else { -1.0 };
-            self.weights
-                .push(direction * self.config.grow_threshold);
+            self.weights.push(direction * self.config.grow_threshold);
             grown = 1;
         }
 
