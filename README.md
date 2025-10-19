@@ -1,4 +1,4 @@
-# DAws
+# SysPike
 
 Prototype Rust workspace showcasing an event-driven reasoning pipeline with a diffusion-based stabilisation loop. The project centres on a single binary that can train, evaluate, and run inference locally without external services.
 
