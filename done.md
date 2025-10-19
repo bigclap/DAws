@@ -8,6 +8,7 @@
 - Upgraded the diffusion loop with annealed alpha/sigma schedules, entropy-scaled gain, and ANN fact recruitment backed by tests.
 - Integrated retriever memory refresh pulses with configurable gate decay and refresh bounds to sustain long-context retention.
 - Provided basic lookup-table encoder and binary decoder utilities so the end-to-end example can run without external model weights.
+- Documented the crate architecture and reasoning data flow in `docs/architecture_overview.md` and linked it from the README.
 - Covered the current surface area with unit tests exercising diffusion convergence, modulation, memory retention, divisive inhibition, eligibility decay, reward application, and XOR correctness.
 - Documented all exposed modules with Rustdoc so that `cargo doc` surfaces architectural intent directly from the code.
 - Split the prototype into a multi-crate workspace (`core_graph`, `core_rules`, `model_enc`, `model_dec`, `retriever`, `trainer`, `datasets`, `evalbench`, `cli`) with shared dependencies to mirror the E → S → D → E′ stack.
