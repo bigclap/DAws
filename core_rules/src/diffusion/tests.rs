@@ -45,6 +45,10 @@ fn diffusion_applies_entropy_scaled_gain() {
     let outcome = diffusion.run(&mut network);
     assert!(diffusion.last_iterations() >= 1);
     assert!((outcome.state[1] - 0.5).abs() < 1e-6);
+    assert_eq!(
+        outcome.diagnostics.iteration_times_ms.len(),
+        outcome.diagnostics.iterations
+    );
 }
 
 #[test]
@@ -107,4 +111,6 @@ fn diffusion_reports_convergence_diagnostics() {
     assert!(diagnostics.stability_streak <= 2);
     assert!(diagnostics.energy >= 0.0);
     assert!(!diagnostics.energy_monotonic || diagnostics.iterations <= 1);
+    assert_eq!(diagnostics.iteration_times_ms.len(), diagnostics.iterations);
+    assert!(diagnostics.average_iteration_ms >= 0.0);
 }

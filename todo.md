@@ -13,7 +13,6 @@
 ## Training and Adaptation
 
 ## Evaluation and Profiling
-- Instrument the pipeline with `tracing`, `pprof-rs`, and energy usage metrics (active nodes/edges, wall time per iteration, memory fragmentation).
 - Implement convergence reporting for diffusion (#iterations to stop, monotonicity of `J_t`) and enforce iteration hard caps.
 
 ## Tooling and Documentation
