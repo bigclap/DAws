@@ -60,6 +60,29 @@ pub struct DiffusionConfig {
     pub fact_recruitment: Option<FactRecruitment>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffusionStopReason {
+    Trivial,
+    Similarity,
+    JtTolerance,
+    Stability,
+    EnergyIncrease,
+    IterationCap,
+}
+
+impl DiffusionStopReason {
+    fn as_str(&self) -> &'static str {
+        match self {
+            DiffusionStopReason::Trivial => "trivial_state",
+            DiffusionStopReason::Similarity => "similarity",
+            DiffusionStopReason::JtTolerance => "jt_tolerance",
+            DiffusionStopReason::Stability => "stability",
+            DiffusionStopReason::EnergyIncrease => "energy_increase",
+            DiffusionStopReason::IterationCap => "iteration_cap",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DiffusionDiagnostics {
     pub iterations: usize,
@@ -68,8 +91,10 @@ pub struct DiffusionDiagnostics {
     pub stability_streak: usize,
     pub energy: f32,
     pub energy_monotonic: bool,
+    pub jt_monotonic: bool,
     pub iteration_times_ms: Vec<f32>,
     pub average_iteration_ms: f32,
+    pub stop_reason: DiffusionStopReason,
 }
 
 impl Default for DiffusionDiagnostics {
@@ -81,8 +106,10 @@ impl Default for DiffusionDiagnostics {
             stability_streak: 0,
             energy: 0.0,
             energy_monotonic: true,
+            jt_monotonic: true,
             iteration_times_ms: Vec::new(),
             average_iteration_ms: 0.0,
+            stop_reason: DiffusionStopReason::Trivial,
         }
     }
 }
@@ -117,8 +144,10 @@ impl DiffusionLoop {
                 stability_streak: 0,
                 energy: network.energy(),
                 energy_monotonic: true,
+                jt_monotonic: true,
                 iteration_times_ms: Vec::new(),
                 average_iteration_ms: 0.0,
+                stop_reason: DiffusionStopReason::Trivial,
             };
             return DiffusionOutcome {
                 state: current,
@@ -131,6 +160,8 @@ impl DiffusionLoop {
         let mut energy_increase_streak = 0usize;
         let mut energy_monotonic = true;
         let mut last_jt = 0.0f32;
+        let mut previous_jt = f32::MAX;
+        let mut jt_monotonic = true;
         let mut iteration_times_ms = Vec::new();
         for iter in 0..self.config.max_iters {
             let iter_span = info_span!("diffusion_iteration", iteration = iter);
@@ -138,6 +169,10 @@ impl DiffusionLoop {
             let iter_start = Instant::now();
             let consensus = network.consensus_state();
             last_jt = jt_metric(&current, &consensus);
+            if last_jt > previous_jt + 1e-6 {
+                jt_monotonic = false;
+            }
+            previous_jt = last_jt;
             let alpha = apply_entropy_policy(
                 self.config.alpha_schedule.value_at(iter),
                 normalised_entropy(&current),
@@ -199,6 +234,15 @@ impl DiffusionLoop {
                 && energy_increase_streak >= self.config.max_energy_increase;
 
             if reached_similarity || reached_jt || reached_stability || energy_violation {
+                let stop_reason = if reached_similarity {
+                    DiffusionStopReason::Similarity
+                } else if reached_jt {
+                    DiffusionStopReason::JtTolerance
+                } else if reached_stability {
+                    DiffusionStopReason::Stability
+                } else {
+                    DiffusionStopReason::EnergyIncrease
+                };
                 let average_iteration_ms = if iteration_times_ms.is_empty() {
                     0.0
                 } else {
@@ -211,8 +255,10 @@ impl DiffusionLoop {
                     stability_streak,
                     energy,
                     energy_monotonic,
+                    jt_monotonic,
                     iteration_times_ms: iteration_times_ms.clone(),
                     average_iteration_ms,
+                    stop_reason,
                 };
                 self.diagnostics = diagnostics.clone();
                 info!(
@@ -222,6 +268,8 @@ impl DiffusionLoop {
                     stability_streak = diagnostics.stability_streak,
                     energy = diagnostics.energy,
                     average_iteration_ms = diagnostics.average_iteration_ms,
+                    jt_monotonic = diagnostics.jt_monotonic,
+                    stop_reason = diagnostics.stop_reason.as_str(),
                     "diffusion completed",
                 );
                 return DiffusionOutcome {
@@ -242,8 +290,10 @@ impl DiffusionLoop {
             stability_streak,
             energy: last_energy,
             energy_monotonic,
+            jt_monotonic,
             iteration_times_ms,
             average_iteration_ms,
+            stop_reason: DiffusionStopReason::IterationCap,
         };
         self.diagnostics = diagnostics.clone();
         info!(
@@ -253,6 +303,8 @@ impl DiffusionLoop {
             stability_streak = diagnostics.stability_streak,
             energy = diagnostics.energy,
             average_iteration_ms = diagnostics.average_iteration_ms,
+            jt_monotonic = diagnostics.jt_monotonic,
+            stop_reason = diagnostics.stop_reason.as_str(),
             "diffusion hit iteration cap",
         );
         DiffusionOutcome {
