@@ -15,4 +15,3 @@
 ## Evaluation and Profiling
 
 ## Tooling and Documentation
-- Produce engineering documentation summarising ablations, convergence curves, energy comparisons against AR baselines, and final readiness criteria.

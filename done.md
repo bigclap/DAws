@@ -23,3 +23,4 @@
 - Author the offline decoder trainer with mmap dataset loader, AdamW schedule (warmup + cosine), optional mixed precision, and validation metrics (cosine@median, retrieval rank@k, distinct-n, ppl surrogate).
 - Added online plasticity routines that perform reward-modulated updates on schedule, handle structural pruning/growth, and retain eligibility traces for inspection.
 - Created a synthetic evaluation bench covering XOR, analogies, stack/parentheses, and long-context retrieval tasks with accuracy and cosine reporting.
+- Produced engineering documentation covering ablation findings, convergence diagnostics, energy comparisons against autoregressive baselines, and readiness gates for pre-release validation.
