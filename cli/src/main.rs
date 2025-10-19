@@ -19,9 +19,9 @@ fn main() {
 
 #[derive(Parser)]
 #[command(
-    name = "daws",
+    name = "syspike",
     version,
-    about = "DAws reasoning workspace CLI",
+    about = "syspike reasoning workspace CLI",
     arg_required_else_help = true
 )]
 struct Cli {

@@ -1,4 +1,4 @@
-//! Evaluation benches and canned demos for the DAws workspace.
+//! Evaluation benches and canned demos for the SysPike workspace.
 
 pub mod synthetic;
 pub mod xor;
